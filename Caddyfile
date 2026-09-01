@@ -1,0 +1,18 @@
+# Caddy obtains and renews the certificate on its own. Viber will not talk to a
+# self-signed one, so this is the simplest way to satisfy it.
+{$FOTOHU_DOMAIN} {
+	encode gzip
+
+	# Viber can send files up to 200 MB; the webhook body itself stays small,
+	# but keep some headroom.
+	request_body {
+		max_size 64MB
+	}
+
+	reverse_proxy bot:8080
+
+	log {
+		output stdout
+		format console
+	}
+}
