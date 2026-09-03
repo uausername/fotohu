@@ -57,11 +57,31 @@ class UploadWorker:
 
     async def start(self) -> None:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Pick up anything the previous run was in the middle of. Both of these
+        # are leftovers by definition: no worker is running yet.
+        recovered = await self.repo.recover_stuck_uploads()
+        if recovered:
+            log.info("requeued %d upload(s) interrupted by the last shutdown", recovered)
+        self._clear_temp_files()
+
         self._tasks = [
             asyncio.create_task(self._loop(i), name=f"uploader-{i}")
             for i in range(self.concurrency)
         ]
         log.info("upload worker started (%d slots)", self.concurrency)
+
+    def _clear_temp_files(self) -> None:
+        """Drop half-downloaded files from an interrupted run.
+
+        They are useless — the requeued upload downloads afresh — and on a small
+        disk a few aborted videos add up.
+        """
+        for leftover in self.temp_dir.glob("upload-*"):
+            try:
+                leftover.unlink()
+            except OSError as exc:  # noqa: PERF203 - one bad file must not stop startup
+                log.warning("could not remove stale temp file %s: %s", leftover, exc)
 
     async def stop(self) -> None:
         self._stop.set()

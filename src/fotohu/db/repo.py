@@ -409,6 +409,27 @@ class Repo:
         await self.conn.commit()
         return dict(row) if row else None
 
+    async def recover_stuck_uploads(self) -> int:
+        """Return rows abandoned mid-flight to the queue. Call once at startup.
+
+        A row is set to 'uploading' the moment a worker claims it. If the process
+        dies there — power cut, `docker compose down`, OOM kill — nothing ever
+        moves it back, and that photo would sit in the database forever: never
+        uploaded, never retried, never answered. Since no upload can genuinely be
+        in flight before the workers have started, anything still 'uploading' at
+        startup is a leftover.
+
+        ``attempts`` is deliberately left as-is: it was already incremented when
+        the row was claimed, so a file that reliably crashes the process still
+        gives up after the usual number of tries instead of looping forever.
+        """
+        cur = await self.conn.execute(
+            "UPDATE uploads SET state = 'pending', next_attempt_at = NULL"
+            " WHERE state = 'uploading'"
+        )
+        await self.conn.commit()
+        return cur.rowcount
+
     async def find_duplicate(self, sha256: str, remote_dir: str) -> dict[str, Any] | None:
         cur = await self.conn.execute(
             "SELECT * FROM uploads WHERE sha256 = ? AND remote_path LIKE ? AND state = 'done'"
