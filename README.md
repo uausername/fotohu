@@ -96,6 +96,7 @@ docker compose run --rm bot rclone --config /data/rclone.conf config
 | [docs/setup-onedrive.md](docs/setup-onedrive.md) | Регистрация приложения в Microsoft Entra |
 | [docs/setup-google-drive.md](docs/setup-google-drive.md) | OAuth-клиент в Google Cloud Console |
 | [docs/setup-rclone.md](docs/setup-rclone.md) | Box, Dropbox, pCloud, Яндекс.Диск, WebDAV, S3 |
+| [docs/setup-vps.md](docs/setup-vps.md) | Развернуть на бесплатном VPS (Google Cloud e2-micro) |
 | [docs/admin-guide.md](docs/admin-guide.md) | Панель администратора, папки, группы, очистка |
 
 ## Три ограничения, о которых честно
@@ -112,7 +113,8 @@ docker compose run --rm bot rclone --config /data/rclone.conf config
 И одно следствие для эксплуатации: пока бот выключен, Telegram копит присланное
 **не дольше 24 часов**. Короткие перезагрузки безопасны, но машину нельзя
 выключать на ночь или на выходные — очередь протухнет. Подробности —
-в [том же документе](docs/limitations.md#5-что-происходит-когда-бот-выключен).
+в [том же документе](docs/limitations.md#5-что-происходит-когда-бот-выключен);
+как поднять на бесплатном VPS — [docs/setup-vps.md](docs/setup-vps.md).
 
 ## Разработка
 
