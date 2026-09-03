@@ -110,7 +110,26 @@ async def run(config: Config) -> None:
         await ctx.shutdown()
 
 
+def _use_system_trust_store() -> None:
+    """Verify TLS against the OS trust store instead of the bundled CA list.
+
+    Windows machines running an HTTPS-inspecting antivirus (Avast, Kaspersky,
+    ESET) or sitting behind a corporate proxy present a re-signed certificate
+    whose root lives in the Windows store but not in Python's bundled ``certifi``
+    list, so every outbound call — Telegram, Graph, Google — fails verification
+    while ``curl`` and ``git`` succeed. ``truststore`` routes verification
+    through the OS store, which fixes that without weakening anything: on Linux
+    and in the Docker image it simply reads ``/etc/ssl/certs`` instead.
+    """
+    with contextlib.suppress(ImportError):
+        import truststore
+
+        truststore.inject_into_ssl()
+
+
 def main() -> None:
+    _use_system_trust_store()
+
     parser = argparse.ArgumentParser(prog="fotohu", description="Family photo archiver bot")
     parser.add_argument("--env", default=".env", help="path to the .env file")
     parser.add_argument("--check", action="store_true",
@@ -123,7 +142,7 @@ def main() -> None:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
-    setup_logging(config.log_level)
+    setup_logging(config.log_level, config.log_file)
 
     if args.check:
         asyncio.run(_check(config))
