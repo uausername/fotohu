@@ -1,0 +1,41 @@
+# Overlay for a small always-on VPS (e.g. a Google Cloud e2-micro: 1 GB RAM,
+# metered egress). Apply it on top of the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# See docs/setup-vps.md for the full walkthrough.
+services:
+  bot:
+    # A guard rail, not a tuning knob. FotoHu streams every file to disk and
+    # never decodes image pixels, so it idles near 150 MB and works near 250 MB.
+    # 512 MB leaves generous headroom while still stopping a runaway process
+    # from taking the whole 1 GB machine down with it (so you can still SSH in).
+    # Raise it if you run heavier concurrency; remove it on a larger box.
+    mem_limit: 512m
+    memswap_limit: 1g
+    # Docker keeps container logs forever by default. On a 30 GB disk that is a
+    # slow leak; cap it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  telegram-bot-api:
+    # This one really does buffer whole files (up to 2 GB). Only enable the
+    # local-api profile on a VPS with room to spare — on a 1 GB box a single
+    # large transfer will push it into swap.
+    mem_limit: 512m
+    memswap_limit: 1500m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

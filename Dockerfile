@@ -3,7 +3,8 @@ FROM python:3.11-slim
 # rclone powers the "any other cloud" backend (Box, Dropbox, pCloud, WebDAV, S3…).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
- && curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+ && arch="$(dpkg --print-architecture)" \
+ && curl -fsSL "https://downloads.rclone.org/rclone-current-linux-${arch}.zip" -o /tmp/rclone.zip \
  && unzip -q -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin \
  && chmod +x /usr/local/bin/rclone \
  && rm /tmp/rclone.zip \
