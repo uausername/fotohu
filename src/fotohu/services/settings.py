@@ -41,6 +41,10 @@ class Settings:
     max_file_mb: int = 2048
     language: str = "ru"
 
+    #: Ping every active admin in chat whenever a member archives a photo.
+    #: Off by default so a fresh install does not spam the admin.
+    notify_admin_on_upload: bool = False
+
     @property
     def purge_exceeds_telegram_window(self) -> bool:
         return self.purge_after_hours >= TELEGRAM_DELETE_WINDOW_HOURS
