@@ -28,8 +28,11 @@ services:
     restart: unless-stopped
     depends_on: [bot]
     environment:
-      # Must match the host part of FOTOHU_PUBLIC_URL.
-      FOTOHU_DOMAIN: ${FOTOHU_DOMAIN:?set FOTOHU_DOMAIN in .env}
+      # Must match the host part of FOTOHU_PUBLIC_URL. Set it in .env before
+      # enabling this profile — Compose evaluates ${...} for every service in
+      # the file, profile or not, so a hard ${VAR:?} here would break the
+      # default `docker compose up` too.
+      FOTOHU_DOMAIN: ${FOTOHU_DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"
@@ -43,8 +46,11 @@ services:
     profiles: ["local-api"]
     restart: unless-stopped
     environment:
-      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?get one at https://my.telegram.org/apps}
-      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?get one at https://my.telegram.org/apps}
+      # Get these at https://my.telegram.org/apps and set them in .env before
+      # enabling this profile. Left as ${VAR:-} rather than ${VAR:?} so the
+      # default `docker compose up` (which still parses this service) works.
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_LOCAL: 1
     volumes:
       - tg-api-data:/var/lib/telegram-bot-api

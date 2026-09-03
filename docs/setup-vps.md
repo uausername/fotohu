@@ -92,9 +92,10 @@ newgrp docker                         # применить группу без �
 git clone https://github.com/uausername/fotohu && cd fotohu
 cp .env.example .env
 
-# Ключ шифрования токенов — сгенерировать один раз, вписать в FOTOHU_SECRET_KEY
+# Ключ шифрования токенов — сгенерировать один раз, вписать в FOTOHU_SECRET_KEY.
+# Формат Fernet — это ровно urlsafe-base64 от 32 случайных байт:
 docker run --rm python:3.11-slim \
-  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 
 nano .env
 ```

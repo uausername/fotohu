@@ -33,9 +33,11 @@ Viber ────┘       │                         ├─ Box / Dropbox / p
 git clone https://github.com/uausername/fotohu && cd fotohu
 cp .env.example .env
 
-# Ключ шифрования токенов — сгенерировать один раз
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# вписать его в FOTOHU_SECRET_KEY, а токен бота от @BotFather — в TELEGRAM_BOT_TOKEN
+# Ключ шифрования токенов — сгенерировать один раз (формат Fernet:
+# urlsafe-base64 от 32 случайных байт), вписать в FOTOHU_SECRET_KEY,
+# а токен бота от @BotFather — в TELEGRAM_BOT_TOKEN
+docker run --rm python:3.11-slim \
+  python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 
 docker compose up -d
 ```
