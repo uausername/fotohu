@@ -317,13 +317,28 @@ async def cb_storage_root(query: CallbackQuery, ctx: AppContext, state: FSMConte
 async def cb_family(query: CallbackQuery, ctx: AppContext) -> None:
     if not await guard(query, ctx):
         return
+    settings = await ctx.settings.get()
     rows = [
         [btn(f"{'👑' if p.is_admin else '👤'} {p.name}", f"adm:p:{p.id}")]
         for p in await ctx.repo.list_people()
     ]
     rows.append([btn("🎟 Создать приглашение", "adm:inv")])
+    rows.append(
+        [btn(f"{'🔔' if settings.notify_admin_on_upload else '🔕'} Уведомлять о загрузках",
+             "adm:fam:notify")]
+    )
     rows.append(BACK)
     await show(query, await service(ctx).family_overview(), kb(*rows))
+
+
+@router.callback_query(F.data == "adm:fam:notify")
+async def cb_family_notify(query: CallbackQuery, ctx: AppContext) -> None:
+    if not await guard(query, ctx):
+        return
+    settings = await ctx.settings.get()
+    await ctx.settings.set("notify_admin_on_upload", not settings.notify_admin_on_upload)
+    await query.answer("Готово")
+    await cb_family(query, ctx)
 
 
 @router.callback_query(F.data.regexp(r"^adm:p:\d+$"))

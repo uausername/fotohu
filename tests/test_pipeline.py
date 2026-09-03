@@ -348,3 +348,75 @@ class TestRestartRecovery:
 
         assert not stale.exists()
         assert keep.exists(), "startup cleanup must only touch its own temp files"
+
+
+class TestAdminUploadNotifications:
+    """The admin can opt in to a ping whenever a member archives a photo."""
+
+    async def _make_admin(self, ctx, chat_id="999"):
+        admin = await ctx.repo.create_person(name="Босс", role=Role.ADMIN)
+        await ctx.repo.link_account(admin.id, Platform.TELEGRAM, "1", "Босс", chat_id)
+        return admin
+
+    async def test_admins_are_pinged_when_the_setting_is_on(
+        self, ctx, adapter, tmp_path, jpeg_bytes
+    ):
+        await make_storage(ctx, tmp_path)
+        await ctx.settings.set("notify_admin_on_upload", True)
+        await self._make_admin(ctx)
+        member = await make_person(ctx, "Дядя Гриша", role=Role.MEMBER, uid="2")
+        adapter.put("a", jpeg_bytes)
+        await ctx.repo.create_upload(media("a"), member.id)
+
+        await drain(worker(ctx, adapter))
+
+        pings = [text for cid, text in adapter.sent if cid == "999"]
+        assert pings and "Дядя Гриша" in pings[0]
+
+    async def test_nothing_is_sent_to_the_admin_by_default(
+        self, ctx, adapter, tmp_path, jpeg_bytes
+    ):
+        await make_storage(ctx, tmp_path)
+        await self._make_admin(ctx)
+        member = await make_person(ctx, "Дядя Гриша", role=Role.MEMBER, uid="2")
+        adapter.put("a", jpeg_bytes)
+        await ctx.repo.create_upload(media("a"), member.id)
+
+        await drain(worker(ctx, adapter))
+
+        assert not any(cid == "999" for cid, _ in adapter.sent)
+
+    async def test_an_admin_is_not_pinged_about_their_own_upload(
+        self, ctx, adapter, tmp_path, jpeg_bytes
+    ):
+        await make_storage(ctx, tmp_path)
+        await ctx.settings.set("notify_admin_on_upload", True)
+        admin = await self._make_admin(ctx)
+        adapter.put("a", jpeg_bytes)
+        await ctx.repo.create_upload(media("a"), admin.id)
+
+        await drain(worker(ctx, adapter))
+
+        assert not any(cid == "999" for cid, _ in adapter.sent)
+
+    async def test_an_album_produces_one_ping_for_the_whole_album(
+        self, ctx, adapter, tmp_path, jpeg_bytes
+    ):
+        await make_storage(ctx, tmp_path)
+        await ctx.settings.set("notify_admin_on_upload", True)
+        await self._make_admin(ctx)
+        member = await make_person(ctx, "Дядя Гриша", role=Role.MEMBER, uid="2")
+        adapter.put("a", jpeg_bytes)
+        adapter.put("b", jpeg_bytes + b"x")
+        await ctx.repo.create_upload(
+            media("a", message_id="10", media_group_id="album-1"), member.id
+        )
+        await ctx.repo.create_upload(
+            media("b", message_id="11", media_group_id="album-1"), member.id
+        )
+
+        await drain(worker(ctx, adapter))
+
+        pings = [text for cid, text in adapter.sent if cid == "999"]
+        assert len(pings) == 1
+        assert "2" in pings[0]

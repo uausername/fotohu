@@ -59,6 +59,17 @@ Windows. Автозапуск при входе в систему: `install-auto
 администратора»; сама задача работает под обычной учётной записью). Логи —
 в `data\bot.log` (задать `FOTOHU_LOG_FILE`).
 
+После обновления кода перезапускайте бот именно так:
+
+```powershell
+Stop-ScheduledTask -TaskName FotoHu; Start-ScheduledTask -TaskName FotoHu
+```
+
+Один только `Start-ScheduledTask` планировщик проигнорирует, пока старый
+экземпляр ещё работает (задача заведена с `-MultipleInstances IgnoreNew`), —
+и бот продолжит крутить прежнюю версию. Проверить, что поднялся новый: в конце
+`data\bot.log` должна появиться свежая строка «FotoHu is up».
+
 ### Нужен ли домен и белый IP?
 
 Короткий ответ: **для Telegram — нет**. Бот работает через long polling, входящие

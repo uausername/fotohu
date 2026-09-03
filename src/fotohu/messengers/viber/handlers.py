@@ -213,6 +213,17 @@ async def _handle_command(ctx, adapter, user_id, name, text, known, lang) -> Non
             user_id, "Использование: /mode per_person | shared | per_group"
         )
         return
+    if command == "notify":
+        arg = argument.lower().strip()
+        if arg in ("on", "вкл", "off", "выкл"):
+            await ctx.settings.set("notify_admin_on_upload", arg in ("on", "вкл"))
+        enabled = (await ctx.settings.get()).notify_admin_on_upload
+        await adapter.send_text(
+            user_id,
+            f"Уведомления о загрузках: {'включены' if enabled else 'выключены'}.\n"
+            "Переключить: /notify on | off",
+        )
+        return
 
     await adapter.send_text(user_id, _admin_help())
 
@@ -227,7 +238,8 @@ def _admin_help() -> str:
         "/storage — подключённые облака\n"
         "/folders — раскладка папок\n"
         "/mode per_person|shared|per_group — режим раскладки\n"
-        "/purge [часы] — очистка чата\n\n"
+        "/purge [часы] — очистка чата\n"
+        "/notify on|off — уведомлять о загрузках участников\n\n"
         "Полная панель с кнопками доступна в Telegram: /admin\n"
         "Виберу удаление сообщений ботом недоступно — это ограничение его API."
     )

@@ -103,4 +103,8 @@ TEXTS: dict[str, str] = {
 
     "last.empty": "Пока ничего не загружено.",
     "last.header": "<b>Последние загрузки</b>\n",
+
+    # --- уведомления администратору ---
+    "admin.new_upload": "📸 <b>{name}</b> загрузил(а) фото:\n<code>{path}</code>",
+    "admin.new_album": "📸 <b>{name}</b> загрузил(а) альбом: {n} шт.",
 }

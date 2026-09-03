@@ -182,9 +182,11 @@ class UploadWorker:
             await self.registry.persist_credentials(backend)
             await backend.close()
 
-        await self._finish(record, outcome, settings, adapter, storage_record)
+        await self._finish(record, outcome, settings, adapter, storage_record, person)
 
-    async def _finish(self, record, outcome, settings, adapter, storage_record) -> None:
+    async def _finish(
+        self, record, outcome, settings, adapter, storage_record, person=None
+    ) -> None:
         upload_id = record["id"]
         lang = settings.language
 
@@ -223,6 +225,7 @@ class UploadWorker:
         await self._report(
             adapter, record, settings, t(lang, key, path=outcome.remote_file.path)
         )
+        await self._announce_upload(record, person, settings, outcome.remote_file.path)
 
     async def _report(self, adapter, record: dict, settings, text: str) -> None:
         """One reply per file — but one summary per album.
@@ -272,8 +275,10 @@ class UploadWorker:
         if message_id:
             await self.repo.update_upload(record["id"], bot_message_id=str(message_id))
 
-    async def _alert_admins(self, text: str) -> None:
+    async def _alert_admins(self, text: str, *, exclude_person_id: int | None = None) -> None:
         for account in await self.repo.list_admin_accounts():
+            if exclude_person_id is not None and account.person_id == exclude_person_id:
+                continue  # don't tell an admin about their own action
             adapter = self.adapters.get(account.platform)
             if adapter is None or not account.chat_id:
                 continue
@@ -281,6 +286,25 @@ class UploadWorker:
                 await adapter.send_text(account.chat_id, text)
             except Exception as exc:  # noqa: BLE001
                 log.warning("could not alert admin %s: %s", account.platform_user_id, exc)
+
+    async def _announce_upload(self, record: dict, person, settings, remote_path: str) -> None:
+        """Tell the admins a photo just landed, if they asked to be told.
+
+        One message per single photo; one per album, sent when the last sibling
+        finishes — same batching rule the sender's own confirmation follows.
+        """
+        if not settings.notify_admin_on_upload:
+            return
+        who = person.name if person else "?"
+        group_id = record.get("media_group_id")
+        if group_id:
+            progress = await self.repo.media_group_progress(group_id)
+            if not progress["finished"]:
+                return
+            text = t(settings.language, "admin.new_album", name=who, n=progress["done"])
+        else:
+            text = t(settings.language, "admin.new_upload", name=who, path=remote_path)
+        await self._alert_admins(text, exclude_person_id=record.get("person_id"))
 
 
 def _deadline_str(settings) -> str | None:

@@ -95,4 +95,7 @@ TEXTS: dict[str, str] = {
 
     "last.empty": "Nothing uploaded yet.",
     "last.header": "<b>Recent uploads</b>\n",
+
+    "admin.new_upload": "📸 <b>{name}</b> uploaded a photo:\n<code>{path}</code>",
+    "admin.new_album": "📸 <b>{name}</b> uploaded an album: {n} photo(s).",
 }
