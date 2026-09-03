@@ -265,3 +265,86 @@ class TestFailureHandling:
         await ctx.repo.reset_failed()
         await drain(worker(ctx, adapter))
         assert (await ctx.repo.recent_uploads())[0]["state"] == "done"
+
+
+async def _wait_for_state(ctx, upload_id: int, state: str, timeout: float = 5.0) -> dict:
+    """Poll until the background worker reaches `state` (or give up)."""
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        row = await ctx.repo.get_upload(upload_id)
+        if row["state"] == state:
+            return row
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"upload {upload_id} is {row['state']!r}, expected {state!r}")
+
+
+class TestRestartRecovery:
+    """What happens when the machine is switched off mid-upload."""
+
+    async def test_an_upload_interrupted_by_a_shutdown_is_retried_on_startup(
+        self, ctx, adapter, tmp_path, jpeg_bytes
+    ):
+        await make_storage(ctx, tmp_path)
+        person = await make_person(ctx)
+        adapter.put("ref-1", jpeg_bytes)
+        await ctx.repo.create_upload(media("ref-1"), person.id)
+
+        # Simulate the power going out between claiming the row and finishing it.
+        claimed = await ctx.repo.claim_next_upload()
+        assert claimed["state"] == "uploading"
+        assert await ctx.repo.claim_next_upload() is None, "a claimed row must not be re-claimed"
+
+        # Restarting the process must pick it up again and carry it through.
+        uploader = worker(ctx, adapter)
+        await uploader.start()
+        try:
+            row = await _wait_for_state(ctx, claimed["id"], "done")
+        finally:
+            await uploader.stop()
+
+        assert row["state"] == "done"
+        assert (tmp_path / "cloud" / row["remote_path"]).read_bytes() == jpeg_bytes
+
+    async def test_recovery_keeps_the_attempt_count_so_a_crash_loop_gives_up(self, ctx):
+        person = await make_person(ctx)
+        await ctx.repo.create_upload(media("ref-1"), person.id)
+
+        for expected in (1, 2, 3):
+            claimed = await ctx.repo.claim_next_upload()
+            assert claimed["attempts"] == expected
+            await ctx.repo.recover_stuck_uploads()
+
+        # A file that reliably kills the process must not be retried forever.
+        for _ in range(4):
+            if await ctx.repo.claim_next_upload() is None:
+                break
+            await ctx.repo.recover_stuck_uploads()
+        assert await ctx.repo.claim_next_upload() is None
+
+    async def test_finished_rows_are_untouched_by_recovery(
+        self, ctx, adapter, tmp_path, jpeg_bytes
+    ):
+        await make_storage(ctx, tmp_path)
+        person = await make_person(ctx)
+        adapter.put("ref-1", jpeg_bytes)
+        await ctx.repo.create_upload(media("ref-1"), person.id)
+        await drain(worker(ctx, adapter))
+
+        assert await ctx.repo.recover_stuck_uploads() == 0
+        assert (await ctx.repo.recent_uploads())[0]["state"] == "done"
+
+    async def test_half_downloaded_temp_files_are_cleared_on_startup(self, ctx, adapter):
+        ctx.config.temp_dir.mkdir(parents=True, exist_ok=True)
+        stale = ctx.config.temp_dir / "upload-7-IMG_0042.JPG"
+        stale.write_bytes(b"half a photo")
+        keep = ctx.config.temp_dir / "something-else.txt"
+        keep.write_bytes(b"not ours")
+
+        uploader = worker(ctx, adapter)
+        await uploader.start()
+        await uploader.stop()
+
+        assert not stale.exists()
+        assert keep.exists(), "startup cleanup must only touch its own temp files"
