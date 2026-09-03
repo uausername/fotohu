@@ -31,6 +31,7 @@ def config(tmp_path: Path) -> Config:
         public_url="https://example.test",
         bootstrap_token="BOOTSTRAP",
         log_level="WARNING",
+        log_file=None,
         language="ru",
         http_host="127.0.0.1",
         http_port=8080,

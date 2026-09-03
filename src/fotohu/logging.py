@@ -49,16 +49,30 @@ class RedactingFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: str = "INFO") -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
-    )
-    handler.addFilter(RedactingFilter())
+def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
+    formatter = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    redactor = RedactingFilter()
+
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        # Run as a background service (Windows Task Scheduler, systemd) there is no
+        # console to watch, so keep a rotating file: 2 MB x 5 is a few days of INFO.
+        from logging.handlers import RotatingFileHandler
+        from pathlib import Path
+
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8"
+            )
+        )
 
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(handler)
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        handler.addFilter(redactor)
+        root.addHandler(handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     # These are chatty and mostly repeat what we already log ourselves.

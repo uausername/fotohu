@@ -65,6 +65,7 @@ class Config:
     public_url: str | None
     bootstrap_token: str | None
     log_level: str
+    log_file: str | None
     language: str
     http_host: str
     http_port: int
@@ -121,6 +122,7 @@ def load_config(env_file: str | os.PathLike[str] | None = ".env") -> Config:
         public_url=public_url,
         bootstrap_token=os.getenv("FOTOHU_BOOTSTRAP_TOKEN", "").strip() or None,
         log_level=os.getenv("FOTOHU_LOG_LEVEL", "INFO").upper(),
+        log_file=os.getenv("FOTOHU_LOG_FILE", "").strip() or None,
         language=os.getenv("FOTOHU_LANGUAGE", "ru").lower(),
         http_host=os.getenv("FOTOHU_HTTP_HOST", "0.0.0.0"),
         http_port=_int("FOTOHU_HTTP_PORT", 8080),

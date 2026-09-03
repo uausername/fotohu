@@ -11,3 +11,6 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+
+# Локальный rclone.exe (скачан вручную)
+bin/
