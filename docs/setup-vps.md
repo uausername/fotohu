@@ -158,6 +158,68 @@ OAuth-портом rclone внутри контейнера описаны в
 docker compose run --rm bot python -m fotohu --check
 ```
 
+## Переезд работающей установки
+
+Если бот уже где-то работает (домашний компьютер, Windows-служба) и вы переносите
+его сюда вместе с данными, шаги 5–7 заменяются на это. Переезжает три вещи: база,
+`rclone.conf` и `FOTOHU_SECRET_KEY`.
+
+**1. Остановите старый экземпляр — до всего остального.** Два бота с одним токеном
+не уживаются: Telegram отдаёт long polling кому-то одному, апдейты начнут теряться
+случайным образом. И выключите автозапуск, иначе старый вернётся после ближайшей
+перезагрузки:
+
+```powershell
+# Windows
+Stop-ScheduledTask -TaskName FotoHu
+Disable-ScheduledTask -TaskName FotoHu   # нужен PowerShell «от администратора»
+```
+
+**2. Сцепите базу.** SQLite работает в режиме WAL: рядом с `fotohu.sqlite3` лежат
+`-wal` и `-shm`, и часть данных живёт в них. Копировать один `.sqlite3` без
+слияния — значит потерять последние записи. После остановки бота:
+
+```bash
+python -c "import sqlite3; c=sqlite3.connect('data/fotohu.sqlite3'); \
+print(c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()); \
+print(c.execute('PRAGMA integrity_check').fetchone()[0])"
+```
+
+Должно напечатать `(0, 0, 0)` и `ok`, а файлы `-wal`/`-shm` — исчезнуть.
+
+**3. Перенесите три файла** на VM (`fotohu.sqlite3`, `rclone.conf`, `.env`).
+Через Cloud Shell: **⋮ → Upload** кладёт файл в Cloud Shell, оттуда на машину —
+`gcloud compute scp <файл> fotohu:~/ --zone=<зона>`.
+
+**4. Перепишите пути в `.env` под контейнер.** Абсолютные пути старой машины
+работать не будут:
+
+```
+RCLONE_BINARY=rclone
+RCLONE_CONFIG=/data/rclone.conf
+FOTOHU_DATA_DIR=/data
+FOTOHU_LOG_FILE=/data/bot.log
+```
+
+`FOTOHU_SECRET_KEY` **обязан остаться прежним** — им зашифрованы токены облаков в
+базе, с новым ключом их придётся привязывать заново.
+
+**5. Положите базу в том до первого запуска.** Иначе бот создаст пустую:
+
+```bash
+cd ~/fotohu
+docker compose up --no-start          # соберёт образ и создаст том
+docker run --rm -v fotohu_fotohu-data:/data -v ~/migrate:/src:ro alpine \
+  sh -c 'cp /src/fotohu.sqlite3 /src/rclone.conf /data/ && chown -R 10001:10001 /data'
+docker compose run --rm bot python -m fotohu --check
+```
+
+`--check` должен показать прежнее число участников и настроенное хранилище.
+Тогда — `docker compose up -d`.
+
+**6. Уберите архив с секретами** отовсюду, куда он попал: с VM, из Cloud Shell и
+с исходной машины. В нём токен бота, OAuth-токены облака и ключ шифрования.
+
 ## Обслуживание
 
 **Логи:**

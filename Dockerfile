@@ -20,7 +20,11 @@ RUN useradd --create-home --uid 10001 fotohu \
  && mkdir -p /data && chown -R fotohu:fotohu /data /app
 USER fotohu
 
+# The container's network namespace is the boundary here, and compose publishes
+# the port to the host's loopback only — so bind all interfaces inside, unlike
+# the bare-metal default of 127.0.0.1.
 ENV FOTOHU_DATA_DIR=/data \
+    FOTOHU_HTTP_HOST=0.0.0.0 \
     PYTHONUNBUFFERED=1
 VOLUME ["/data"]
 EXPOSE 8080

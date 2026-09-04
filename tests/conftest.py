@@ -52,7 +52,12 @@ async def ctx(config: Config):
         repo=repo,
         settings=settings,
         members=MemberService(repo, settings),
-        storage=StorageRegistry(repo, config.secret_key),
+        storage=StorageRegistry(
+            repo,
+            config.secret_key,
+            rclone_binary=config.rclone_binary,
+            rclone_config=config.rclone_config,
+        ),
     )
     config.temp_dir.mkdir(parents=True, exist_ok=True)
     yield context

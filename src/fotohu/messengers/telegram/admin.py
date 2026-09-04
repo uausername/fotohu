@@ -768,12 +768,10 @@ async def on_rclone_remote(message: Message, ctx: AppContext, state: FSMContext)
     data = await state.get_data()
     remote = (message.text or "").strip()
     svc = service(ctx)
-    await svc.set_storage_extra(
-        data["account_id"],
-        remote=remote,
-        binary=ctx.config.rclone_binary,
-        config_path=ctx.config.rclone_config,
-    )
+    # Only the remote name belongs to the account. The rclone binary and config
+    # paths are machine-level and are read from the environment at build time —
+    # storing them here would pin the account to this host.
+    await svc.set_storage_extra(data["account_id"], remote=remote)
     await state.clear()
     result = await svc.test_storage(data["account_id"])
     await message.answer(result.message, reply_markup=MENU_KB)
