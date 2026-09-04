@@ -76,9 +76,11 @@ async def run(config: Config) -> None:
 
     await ctx.start_workers()
 
-    runner = None
-    if config.needs_web_server:
-        runner = await _serve_http(ctx, telegram_dp, telegram_bot)
+    # Always on, even for the Telegram-only setup that needs no inbound traffic:
+    # /health is what the container healthcheck and any external monitor probe,
+    # and gating the server on Viber/webhook/public_url left the common case
+    # permanently reporting "unhealthy" while working perfectly.
+    runner = await _serve_http(ctx, telegram_dp, telegram_bot)
 
     tasks: list[asyncio.Task] = []
     if telegram_bot and telegram_dp:
@@ -163,6 +165,9 @@ async def _check(config: Config) -> None:
     print(f"telegram:  {'on' if config.telegram.enabled else 'off'}")
     print(f"viber:     {'on' if config.viber.enabled else 'off'}")
     print(f"public url:{config.public_url or ' (not set)'}")
+    if config.needs_public_access and not config.public_url:
+        print("  warning: Viber and the Telegram webhook need FOTOHU_PUBLIC_URL to be set")
+    print(f"http:      {config.http_host}:{config.http_port}")
     print(f"storage:   {storage['label'] if storage else '(none configured)'}")
     print(f"layout:    {settings.folder_mode}")
     print(f"purge:     {'on' if settings.purge_enabled else 'off'}, "

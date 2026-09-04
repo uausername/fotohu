@@ -95,7 +95,12 @@ class Config:
         return self.public_url.rstrip("/") + self.oauth_redirect_path
 
     @property
-    def needs_web_server(self) -> bool:
+    def needs_public_access(self) -> bool:
+        """True when the HTTP surface has to be reachable from the internet.
+
+        Only Viber's webhook, an opt-in Telegram webhook and the OAuth callback
+        need that. ``/health`` is served regardless — see :mod:`fotohu.__main__`.
+        """
         return bool(self.viber.enabled or self.telegram.use_webhook or self.public_url)
 
 
@@ -124,7 +129,11 @@ def load_config(env_file: str | os.PathLike[str] | None = ".env") -> Config:
         log_level=os.getenv("FOTOHU_LOG_LEVEL", "INFO").upper(),
         log_file=os.getenv("FOTOHU_LOG_FILE", "").strip() or None,
         language=os.getenv("FOTOHU_LANGUAGE", "ru").lower(),
-        http_host=os.getenv("FOTOHU_HTTP_HOST", "0.0.0.0"),
+        # Loopback by default: the only always-on route is /health, and a bare
+        # metal install should not open a port on the LAN just to have it. The
+        # Docker image sets 0.0.0.0, because there the container's own namespace
+        # is the boundary and compose publishes the port to the host's loopback.
+        http_host=os.getenv("FOTOHU_HTTP_HOST", "127.0.0.1"),
         http_port=_int("FOTOHU_HTTP_PORT", 8080),
         telegram=TelegramConfig(
             token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None,

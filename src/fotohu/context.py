@@ -94,5 +94,10 @@ async def build_context(config: Config) -> AppContext:
         repo=repo,
         settings=settings,
         members=MemberService(repo, settings),
-        storage=StorageRegistry(repo, config.secret_key),
+        storage=StorageRegistry(
+            repo,
+            config.secret_key,
+            rclone_binary=config.rclone_binary,
+            rclone_config=config.rclone_config,
+        ),
     )

@@ -221,6 +221,14 @@ class UploadWorker:
             verified=bool(outcome.verified),
             purge_after=pipeline.purge_deadline(settings),
         )
+        # Every failure path logs; success did not, which left the log showing
+        # only what went wrong and no way to confirm a file actually landed.
+        log.info(
+            "upload %s stored: %s (%s)",
+            upload_id,
+            outcome.remote_file.path,
+            "hash verified" if outcome.verified else "size only",
+        )
         key = "upload.ok" if outcome.verified else "upload.ok_unverified"
         await self._report(
             adapter, record, settings, t(lang, key, path=outcome.remote_file.path)
