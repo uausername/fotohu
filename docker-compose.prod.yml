@@ -39,3 +39,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  tg-api-gc:
+    # A shell asleep 99.97% of the time. The limit is here so the sweeper can
+    # never be the thing that pushes a 1 GB box into swap.
+    mem_limit: 32m
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"

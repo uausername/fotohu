@@ -8,6 +8,7 @@ is ever going to remove theirs.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -60,11 +61,16 @@ class TestLocalSpoolIsReclaimed:
     async def test_a_refused_unlink_does_not_lose_the_download(
         self, spool, tmp_path, monkeypatch, caplog
     ):
-        """The two containers may run as different users; that must not cost us the file.
+        """Under Docker the unlink is always refused, and that must cost us nothing.
 
-        Losing the bytes here would be far worse than the disk we failed to
-        reclaim — the upload would be retried from scratch for no reason.
+        The server owns the spool as uid 101 and writes it 0750: the bot is in
+        that group so it can read, but unlinking needs write on the directory,
+        which it does not have. The `tg-api-gc` sidecar sweeps as root instead.
+        Losing the bytes here would be far worse than the disk left behind — the
+        upload would be retried from scratch for no reason — and a warning on
+        every single video would train everyone to ignore the log.
         """
+        caplog.set_level(logging.DEBUG)
         source = spool / "big.mp4"
         source.write_bytes(b"video bytes")
 
@@ -72,6 +78,25 @@ class TestLocalSpoolIsReclaimed:
             raise PermissionError(13, "Permission denied")
 
         monkeypatch.setattr(Path, "unlink", refuse)
+        adapter = TelegramAdapter(FakeBot(FakeFile(str(source), 11)), local_mode=True)
+
+        local = await adapter.download("file-id", tmp_path / "upload-1")
+
+        assert local.path.read_bytes() == b"video bytes"
+        assert "leaving" in caplog.text
+        assert "WARNING" not in caplog.text
+
+    async def test_an_unexpected_failure_is_still_worth_a_warning(
+        self, spool, tmp_path, monkeypatch, caplog
+    ):
+        """A refusal is the designed-for case; anything else is not, and should say so."""
+        source = spool / "big.mp4"
+        source.write_bytes(b"video bytes")
+
+        def fail(self: Path) -> None:
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr(Path, "unlink", fail)
         adapter = TelegramAdapter(FakeBot(FakeFile(str(source), 11)), local_mode=True)
 
         local = await adapter.download("file-id", tmp_path / "upload-1")
