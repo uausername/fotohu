@@ -135,6 +135,12 @@ async def process_upload(
             raise IntegrityError(
                 f"digest mismatch for {remote.path}: the cloud copy differs from what we sent"
             )
+        if remote.verified_on_write:
+            # The backend checked the provider's own digest on the way in. Trust
+            # that over what we can work out here: a provider that only reports a
+            # hash we cannot compute locally would otherwise look unverified when
+            # it is in fact the best-checked case we have.
+            verified = True
 
         return UploadOutcome(
             state=UploadState.DONE,

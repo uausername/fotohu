@@ -70,6 +70,10 @@ class AppContext:
                 await adapter.close()
             except Exception as exc:  # noqa: BLE001
                 log.warning("adapter %s did not close cleanly: %s", adapter.platform, exc)
+        try:
+            await self.storage.close()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("storage did not close cleanly: %s", exc)
         await self.conn.close()
 
 
