@@ -19,6 +19,7 @@ from .gdrive import GoogleDriveBackend
 from .local import LocalBackend
 from .onedrive import OneDriveBackend
 from .rclone_backend import RcloneBackend
+from .rclone_daemon import RcloneDaemon
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,19 @@ class StorageRegistry:
         self.secret_key = secret_key
         self.rclone_binary = rclone_binary
         self.rclone_config = rclone_config
+        #: Started on first use and kept for the life of the process; every
+        #: rclone-backed upload shares it. See :mod:`fotohu.storage.rclone_daemon`.
+        self._rclone: RcloneDaemon | None = None
+
+    def rclone_daemon(self) -> RcloneDaemon:
+        if self._rclone is None:
+            self._rclone = RcloneDaemon(self.rclone_binary, self.rclone_config)
+        return self._rclone
+
+    async def close(self) -> None:
+        if self._rclone is not None:
+            await self._rclone.stop()
+            self._rclone = None
 
     # ------------------------------------------------------------- construction
 
@@ -62,6 +76,7 @@ class StorageRegistry:
         if record.get("credentials_enc"):
             credentials = decrypt_json(self.secret_key, record["credentials_enc"])
         extra = json.loads(record.get("extra_json") or "{}")
+        kwargs: dict[str, Any] = {}
 
         if cls is RcloneBackend:
             # Where the rclone binary and its config file live is a property of
@@ -75,12 +90,14 @@ class StorageRegistry:
                 "binary": self.rclone_binary,
                 "config_path": self.rclone_config,
             }
+            kwargs["daemon"] = self.rclone_daemon()
 
         backend = cls(
             account_id=record["id"],
             root_folder=record["root_folder"],
             credentials=credentials,
             extra=extra,
+            **kwargs,
         )
         self._attach_cache(backend)
         return backend

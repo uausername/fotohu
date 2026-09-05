@@ -123,6 +123,12 @@ class RemoteFile:
     #: ``quickxor``. Used to prove the stored bytes match what we sent.
     hashes: dict[str, str] = field(default_factory=dict)
     web_url: str | None = None
+    #: True when the backend compared the provider's digest against the bytes it
+    #: sent, as part of writing them. That is a stronger statement than anything
+    #: we can reconstruct afterwards from :attr:`hashes`, because a provider may
+    #: only report a digest we cannot compute locally — OneDrive's QuickXorHash,
+    #: for one. ``None`` means the backend makes no claim either way.
+    verified_on_write: bool | None = None
 
 
 @dataclass(slots=True)

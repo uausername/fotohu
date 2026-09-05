@@ -4,25 +4,26 @@ This is what makes "or any other online drive" true: rclone speaks Box, Dropbox,
 pCloud, Yandex.Disk, Mega, WebDAV, S3 and dozens more. The admin configures a
 remote once with ``rclone config``, then points FotoHu at ``remote:path``.
 
-We shell out rather than link a library: rclone has no Python bindings, and its
-CLI already handles chunked, resumable, integrity-checked transfers.
+We drive it through a long-lived ``rclone rcd`` daemon rather than by spawning
+the command each time — see :mod:`fotohu.storage.rclone_daemon` for why that is
+worth a background process. The operations below are therefore RC calls, but the
+work they ask for is exactly what the equivalent CLI commands would have done.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import shutil
 from typing import Any
 
-from ..core.errors import RetryableError, StorageError
+from ..core.errors import StorageError
 from ..core.models import LocalFile, Quota, RemoteFile
 from .base import BackendInfo, StorageBackend
+from .rclone_daemon import CALL_TIMEOUT, RcloneDaemon, RcloneRemoteError
 
 log = logging.getLogger(__name__)
 
-TIMEOUT = 3600  # a 2 GB video over a slow uplink still has to fit
+#: A 2 GB video over a slow uplink still has to fit.
+TRANSFER_TIMEOUT = 3600
 
 
 class RcloneBackend(StorageBackend):
@@ -35,7 +36,8 @@ class RcloneBackend(StorageBackend):
     )
 
     def __init__(self, account_id: int, root_folder: str, credentials: dict[str, Any],
-                 extra: dict[str, Any] | None = None) -> None:
+                 extra: dict[str, Any] | None = None,
+                 daemon: RcloneDaemon | None = None) -> None:
         super().__init__(account_id, root_folder, credentials, extra)
         self.binary = self.extra.get("binary") or "rclone"
         self.config_path = self.extra.get("config_path")
@@ -43,74 +45,61 @@ class RcloneBackend(StorageBackend):
         if remote and not remote.endswith(":") and ":" not in remote:
             remote = f"{remote}:"
         self.remote = remote
+        #: The registry hands every backend the one daemon the process shares.
+        #: A backend built outside it — a test, a one-off script — gets its own
+        #: and is the only thing allowed to shut it down again.
+        self._own_daemon = daemon is None
+        self.daemon = daemon or RcloneDaemon(self.binary, self.config_path)
+        #: remote_dir -> {filename: listing entry}. One backend exists per upload,
+        #: so this is a within-upload cache and cannot go stale under us.
+        self._listing: dict[str, dict[str, dict[str, Any]]] = {}
 
-    # ------------------------------------------------------------------ process
+    # -------------------------------------------------------------------- plumbing
 
-    def _base_args(self) -> list[str]:
-        args = [self.binary, "--use-json-log", "--log-level", "ERROR"]
-        if self.config_path:
-            args += ["--config", self.config_path]
-        return args
-
-    async def _run(self, *args: str, timeout: int = 120) -> str:
-        if not shutil.which(self.binary):
-            raise StorageError(
-                f"rclone binary '{self.binary}' not found on PATH — install rclone "
-                "or set RCLONE_BINARY"
-            )
+    async def _rc(
+        self, path: str, payload: dict[str, Any], *, timeout: int = CALL_TIMEOUT
+    ) -> dict[str, Any]:
         if not self.remote:
             raise StorageError("no rclone remote configured for this storage account")
-
-        cmd = [*self._base_args(), *args]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise RetryableError(f"rclone {args[0]} timed out after {timeout}s") from None
-
-        if proc.returncode != 0:
-            message = (stderr or b"").decode(errors="replace").strip()[:400]
-            # rclone exit 5 is "temporary error", the documented signal to retry.
-            if proc.returncode == 5:
-                raise RetryableError(f"rclone {args[0]}: {message}")
-            raise StorageError(f"rclone {args[0]} failed ({proc.returncode}): {message}")
-        return (stdout or b"").decode(errors="replace")
+        return await self.daemon.call(path, payload, timeout=timeout)
 
     def _remote_path(self, path: str) -> str:
         return f"{self.remote}{path.strip('/')}"
 
-    # --------------------------------------------------------------- operations
+    async def _list_dir(self, remote_dir: str) -> dict[str, dict[str, Any]]:
+        """Every name in one directory, fetched once.
 
-    async def ensure_folder(self, path: str) -> str:
-        await self._run("mkdir", self._remote_path(path))
-        return self._remote_path(path)
-
-    async def exists(self, remote_dir: str, filename: str) -> RemoteFile | None:
+        ``_free_filename`` asks about one candidate name after another, and each
+        question used to be its own round trip. Listing the directory answers all
+        of them at once, and is cheaper even for the first question: measured
+        cold against OneDrive, a listing cost 4.0 s where a single stat cost 6.9 s.
+        """
+        if remote_dir in self._listing:
+            return self._listing[remote_dir]
         try:
-            raw = await self._run(
-                "lsjson", self._remote_path(f"{remote_dir}/{filename}"), "--stat", "--hash"
+            body = await self._rc(
+                "operations/list",
+                {
+                    "fs": self.remote,
+                    "remote": remote_dir.strip("/"),
+                    "opt": {"showHash": True, "noMimeType": True},
+                },
             )
-        except StorageError:
-            return None
-        if not raw.strip():
-            return None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not data:
-            return None
-        return self._to_remote(data, f"{remote_dir}/{filename}")
+        except RcloneRemoteError as exc:
+            if exc.status != 404:
+                raise
+            body = {}  # this month's folder simply does not exist yet
+        index = {item["Name"]: item for item in body.get("list") or []}
+        self._listing[remote_dir] = index
+        return index
 
     @staticmethod
     def _to_remote(data: dict[str, Any], path: str) -> RemoteFile:
         raw = {k.lower(): v for k, v in (data.get("Hashes") or {}).items()}
         hashes = {}
-        for ours, theirs in (("sha256", "sha-256"), ("sha1", "sha-1"), ("md5", "md5")):
+        for ours, theirs in (
+            ("sha256", "sha-256"), ("sha1", "sha-1"), ("md5", "md5"), ("quickxor", "quickxor")
+        ):
             value = raw.get(theirs) or raw.get(ours)
             if value:
                 hashes[ours] = value
@@ -121,31 +110,61 @@ class RcloneBackend(StorageBackend):
             hashes=hashes,
         )
 
-    async def upload(self, local: LocalFile, remote_dir: str, filename: str) -> RemoteFile:
-        target = self._remote_path(f"{remote_dir}/{filename}")
-        await self._run(
-            "copyto", str(local.path), target,
-            "--retries", "3",
-            "--low-level-retries", "10",
-            timeout=TIMEOUT,
+    # --------------------------------------------------------------- operations
+
+    async def ensure_folder(self, path: str) -> str:
+        await self._rc("operations/mkdir", {"fs": self.remote, "remote": path.strip("/")})
+        return self._remote_path(path)
+
+    async def exists(self, remote_dir: str, filename: str) -> RemoteFile | None:
+        item = (await self._list_dir(remote_dir)).get(filename)
+        return self._to_remote(item, f"{remote_dir}/{filename}") if item else None
+
+    async def stat(self, path: str) -> RemoteFile | None:
+        body = await self._rc(
+            "operations/stat",
+            {"fs": self.remote, "remote": path.strip("/"), "opt": {"showHash": True}},
         )
-        stored = await self.exists(remote_dir, filename)
+        item = body.get("item")
+        return self._to_remote(item, path) if item else None
+
+    async def upload(self, local: LocalFile, remote_dir: str, filename: str) -> RemoteFile:
+        target = f"{remote_dir.strip('/')}/{filename}"
+        await self._rc(
+            "operations/copyfile",
+            {
+                "srcFs": str(local.path.parent),
+                "srcRemote": local.path.name,
+                "dstFs": self.remote,
+                "dstRemote": target,
+            },
+            timeout=TRANSFER_TIMEOUT,
+        )
+        self._listing.pop(remote_dir, None)  # we just changed what is in there
+
+        stored = await self.stat(target)
         if stored is None:
-            raise StorageError(f"rclone reported success but {target} is not there")
+            raise StorageError(
+                f"rclone reported success but {self._remote_path(target)} is not there"
+            )
+        # rclone compares digests as part of copying and deletes the destination
+        # if they differ, so a copy that returned at all is one the provider's own
+        # hash agreed with — provided the provider reports a hash to agree with.
+        stored.verified_on_write = bool(stored.hashes)
         return stored
 
     async def quota(self) -> Quota | None:
         try:
-            raw = await self._run("about", self.remote, "--json")
+            data = await self._rc("operations/about", {"fs": self.remote})
         except StorageError:
             return None  # plenty of remotes simply do not implement `about`
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
         return Quota(total=data.get("total"), used=data.get("used"))
 
     async def check(self) -> str:
-        await self._run("lsjson", self.remote, "--max-depth", "1")
+        await self._rc("operations/list", {"fs": self.remote, "remote": ""})
         await self.ensure_folder(self.root_folder)
         return f"rclone {self.remote} ok"
+
+    async def close(self) -> None:
+        if self._own_daemon:
+            await self.daemon.stop()
