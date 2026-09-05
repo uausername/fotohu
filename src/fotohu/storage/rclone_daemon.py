@@ -128,17 +128,21 @@ class RcloneDaemon:
         log.info("rclone daemon ready on 127.0.0.1:%d", port)
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
-        """Keep the pipe empty — a full one would wedge the daemon — and log it.
+        """Keep the pipe empty — a full one would wedge the daemon — and keep a tail.
 
-        Whatever rclone has to say belongs in our log next to the upload it broke,
-        not in a buffer nobody reads.
+        Deliberately ``debug``: rclone logs at ERROR every rejection it hands back,
+        including the ones we ask for on purpose. Listing a month folder that does
+        not exist yet is how the pipeline learns the name is free, and reporting
+        that as a warning meant every first-of-the-month upload looked like a
+        failure in the log. Anything that actually breaks an upload reaches us as
+        the RC response instead, and the worker logs it with its own context.
         """
         assert proc.stderr is not None
         while line := await proc.stderr.readline():
             text = line.decode(errors="replace").strip()
             if text:
                 self._recent_errors.append(text)
-                log.warning("rclone daemon: %s", text)
+                log.debug("rclone daemon: %s", text)
 
     async def _await_ready(self) -> None:
         loop = asyncio.get_running_loop()
