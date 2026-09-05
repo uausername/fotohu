@@ -96,6 +96,7 @@ TEXTS: dict[str, str] = {
         "📁 Папка: <code>{folder}</code>\n"
         "🖼 Сохранено: {count} шт. ({size})"
     ),
+    "album.queued": "📥 Принял альбом ({n} шт.), загружаю в облако…",
     "album.done": "✅ Альбом: сохранено {n} шт.",
     "album.duplicates": "♻️ Уже были в архиве: {n}",
     "album.rejected": "⚠️ Пропущено сжатых: {n} (пришлите файлом — /howto)",
