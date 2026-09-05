@@ -37,13 +37,19 @@ def _reclaim(path: Path) -> None:
     local mode that is the bot's job, and nothing else will ever read this file.
     Left alone it fills the disk one video at a time.
 
-    Failing is not fatal — we already hold the bytes we came for, and the worst
-    case is the disk usage we had before this existed — but it is worth a line
-    in the log, because the likely cause is the two containers running as
-    different users and needs a person to fix.
+    Under Docker this is expected to fail and that is fine. The server drops to
+    uid 101 and writes the spool 0750, which lets us into the directory to read
+    but not to unlink; the ``tg-api-gc`` sidecar sweeps as root instead. Where
+    both halves run as one user — a bare metal install — the file goes now.
+
+    Either way we already hold the bytes we came for, so nothing here is fatal.
+    Anything other than a refusal is still worth a line in the log: it means the
+    spool is behaving in a way neither arrangement predicts.
     """
     try:
         path.unlink()
+    except PermissionError:
+        log.debug("leaving %s to the sweeper: the spool is not ours to unlink", path)
     except OSError as exc:
         log.warning("could not reclaim %s from the local API server: %s", path, exc)
 

@@ -9,6 +9,12 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    # telegram-bot-api drops to uid 101 and writes its spool 0750/0640, so
+    # nothing outside that group can read what it downloaded. Joining the group
+    # is what lets the bot copy a file straight off the shared volume instead of
+    # fetching it a second time over HTTP. Inert without the local-api profile.
+    group_add:
+      - "101"
     volumes:
       # Holds the database, temp files and rclone.conf. Create the latter with
       #   docker compose run --rm bot rclone --config /data/rclone.conf config
@@ -52,6 +58,26 @@ services:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_LOCAL: 1
+    volumes:
+      - tg-api-data:/var/lib/telegram-bot-api
+
+  tg-api-gc:
+    # telegram-bot-api never reclaims what it downloads, and the bot cannot do
+    # it either: group membership buys it a read of the spool, not the write on
+    # the directory that unlinking needs. So the sweeping is done as root.
+    #
+    # Depth is what makes the rule safe. The server's own databases sit at the
+    # top of the volume and at <token>/td.binlog — depth 1 and 2 — while media
+    # lands in <token>/documents, <token>/videos and their siblings at depth 3.
+    # An hour is an eternity next to the seconds between getFile and the copy.
+    image: alpine:3
+    profiles: ["local-api"]
+    restart: unless-stopped
+    command: >
+      sh -c 'while true; do
+        find /var/lib/telegram-bot-api -mindepth 3 -type f ! -name "*.binlog" -mmin +60 -delete;
+        sleep 900;
+      done'
     volumes:
       - tg-api-data:/var/lib/telegram-bot-api
 
