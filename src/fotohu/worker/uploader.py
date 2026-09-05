@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
 
@@ -28,6 +29,8 @@ IDLE_SLEEP = 2.0
 #: Attempt N waits this many minutes. Beyond the list the row stays failed and
 #: the admin can requeue it from the panel.
 BACKOFF_MINUTES = [1, 5, 15, 60, 240]
+#: How many album tallies to remember, so the same summary is never sent twice.
+ANNOUNCED_MEMORY = 512
 
 
 class UploadWorker:
@@ -51,6 +54,8 @@ class UploadWorker:
         #: Poked by the messenger handlers so a new photo starts uploading
         #: immediately instead of waiting out the idle sleep.
         self._wakeup = asyncio.Event()
+        #: Album tallies already announced, oldest first. See :meth:`_claim_notice`.
+        self._announced: OrderedDict[str, None] = OrderedDict()
 
     def notify(self) -> None:
         self._wakeup.set()
@@ -249,6 +254,8 @@ class UploadWorker:
         progress = await self.repo.media_group_progress(group_id)
         if not progress["finished"]:
             return  # a sibling is still uploading; the last one speaks for all
+        if not self._claim_notice(group_id, progress):
+            return
 
         parts = [t(settings.language, "album.done", n=progress["done"])]
         if progress["duplicates"]:
@@ -258,6 +265,26 @@ class UploadWorker:
         if progress["failed"]:
             parts.append(t(settings.language, "album.failed", n=progress["failed"]))
         await self._notify(adapter, record, "\n".join(parts))
+
+    def _claim_notice(self, key: str, progress: dict) -> bool:
+        """Let exactly one caller speak for an album in the state it is now in.
+
+        Two siblings finishing in the same instant both see the album as complete,
+        which without this means two identical summaries. The claim is keyed on
+        the tally rather than on the album alone, so a sibling that failed and
+        then succeeded on retry can still report the corrected result — while a
+        retry that fails the same way again says nothing new.
+        """
+        stamp = (
+            f"{key}:{progress['done']}/{progress['duplicates']}"
+            f"/{progress['rejected']}/{progress['failed']}"
+        )
+        if stamp in self._announced:
+            return False
+        self._announced[stamp] = None
+        while len(self._announced) > ANNOUNCED_MEMORY:
+            self._announced.popitem(last=False)
+        return True
 
     async def _retry(self, upload_id: int, attempts: int, error: str) -> None:
         index = min(max(attempts - 1, 0), len(BACKOFF_MINUTES) - 1)
@@ -308,6 +335,8 @@ class UploadWorker:
         if group_id:
             progress = await self.repo.media_group_progress(group_id)
             if not progress["finished"]:
+                return
+            if not self._claim_notice(f"admin:{group_id}", progress):
                 return
             text = t(settings.language, "admin.new_album", name=who, n=progress["done"])
         else:

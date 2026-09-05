@@ -88,6 +88,7 @@ TEXTS: dict[str, str] = {
         "📁 Folder: <code>{folder}</code>\n"
         "🖼 Archived: {count} ({size})"
     ),
+    "album.queued": "📥 Got the album ({n} file(s)), uploading…",
     "album.done": "✅ Album: {n} saved.",
     "album.duplicates": "♻️ Already archived: {n}",
     "album.rejected": "⚠️ Compressed, skipped: {n} (send as files — /howto)",

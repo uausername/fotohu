@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections import OrderedDict
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -11,6 +13,7 @@ from aiogram.types import Message
 from ...context import AppContext
 from ...core.models import IncomingMedia, Platform, SourceKind
 from ...i18n import t
+from ..base import MessengerAdapter
 from .adapter import PUBLIC_API_DOWNLOAD_LIMIT
 
 log = logging.getLogger(__name__)
@@ -171,6 +174,67 @@ async def cmd_last(message: Message, ctx: AppContext) -> None:
 
 # ------------------------------------------------------------------ media intake
 
+#: Telegram delivers an album as one update per file, a fraction of a second
+#: apart. We answer once, this long after the first of them, so the receipt can
+#: say how many files the album actually turned out to hold.
+ALBUM_ACK_DELAY = 1.5
+
+#: Albums already answered for, oldest first. Bounded: a process that runs for
+#: months would otherwise remember every album it has ever seen.
+ALBUM_MEMORY = 512
+_answered_albums: OrderedDict[str, None] = OrderedDict()
+
+#: asyncio keeps only a weak reference to a bare task, so a receipt that nobody
+#: holds on to can be collected before it ever runs.
+_ack_tasks: set[asyncio.Task] = set()
+
+
+def _claim_album_receipt(group_id: str) -> bool:
+    """True for the first file of an album, False for every sibling after it.
+
+    Nothing is awaited between the lookup and the insert, so two updates being
+    handled concurrently cannot both come away believing they are the first.
+    """
+    if group_id in _answered_albums:
+        return False
+    _answered_albums[group_id] = None
+    while len(_answered_albums) > ALBUM_MEMORY:
+        _answered_albums.popitem(last=False)
+    return True
+
+
+async def _ack_album(
+    adapter: MessengerAdapter, ctx: AppContext, lang: str, group_id: str, chat_id: str
+) -> None:
+    """Confirm an album once, shortly after its first file arrives.
+
+    Album members skip the per-file receipt on purpose — a ten-photo album would
+    otherwise mean ten of them — and the worker sends one summary once the last
+    file has landed. But that summary is only as quick as the uploads themselves,
+    which over a slow link is minutes, and until it arrives an album looks to the
+    sender exactly like a message the bot ignored. This is the receipt in between.
+    """
+    await asyncio.sleep(ALBUM_ACK_DELAY)
+    try:
+        progress = await ctx.repo.media_group_progress(group_id)
+        await adapter.send_text(chat_id, t(lang, "album.queued", n=progress["total"]))
+    except Exception as exc:  # noqa: BLE001 - a missing receipt must not lose the upload
+        log.warning("could not acknowledge album %s: %s", group_id, exc)
+
+
+def _ack_album_later(
+    adapter: MessengerAdapter | None,
+    ctx: AppContext,
+    lang: str,
+    group_id: str,
+    chat_id: str,
+) -> None:
+    if adapter is None or not _claim_album_receipt(group_id):
+        return
+    task = asyncio.create_task(_ack_album(adapter, ctx, lang, group_id, chat_id))
+    _ack_tasks.add(task)
+    task.add_done_callback(_ack_tasks.discard)
+
 
 @router.message(F.document | F.photo | F.video | F.video_note | F.animation)
 async def on_media(message: Message, ctx: AppContext) -> None:
@@ -218,7 +282,9 @@ async def on_media(message: Message, ctx: AppContext) -> None:
         await message.answer(t(lang, "quality.rejected"))
         return
 
-    if not media.media_group_id:
+    if media.media_group_id:
+        _ack_album_later(adapter, ctx, lang, media.media_group_id, media.chat_id)
+    else:
         await message.answer(t(lang, "upload.queued", name=media.file_name))
     if ctx.uploader:
         ctx.uploader.notify()
