@@ -29,6 +29,24 @@ PUBLIC_API_DOWNLOAD_LIMIT = 20 * 1024 * 1024
 #: Telegram will not delete anything older than this, whatever rights the bot has.
 DELETE_WINDOW_HOURS = 48
 
+
+def _reclaim(path: Path) -> None:
+    """Drop the local API server's copy once we have taken our own.
+
+    A self-hosted ``telegram-bot-api`` never reclaims what it downloads: in
+    local mode that is the bot's job, and nothing else will ever read this file.
+    Left alone it fills the disk one video at a time.
+
+    Failing is not fatal — we already hold the bytes we came for, and the worst
+    case is the disk usage we had before this existed — but it is worth a line
+    in the log, because the likely cause is the two containers running as
+    different users and needs a person to fix.
+    """
+    try:
+        path.unlink()
+    except OSError as exc:
+        log.warning("could not reclaim %s from the local API server: %s", path, exc)
+
 #: deleteMessages (plural) takes at most this many ids per call.
 DELETE_BATCH = 100
 
@@ -62,9 +80,20 @@ class TelegramAdapter(MessengerAdapter):
         # A local Bot API server shares the filesystem with us: just copy.
         if self.local_mode and Path(file.file_path).is_absolute():
             source = Path(file.file_path)
-            if source.exists():
-                return copy_into(source, dest)
-            log.warning("local mode is on but %s is not readable; falling back to HTTP", source)
+            if not source.exists():
+                # There is no HTTP to fall back to: with ``is_local`` set,
+                # aiogram's downloader reads this very path off the disk, so a
+                # stream here would only fail one frame deeper. Either the two
+                # containers do not really share the volume, or the server
+                # handed back a cached path for a file we have already reclaimed
+                # — and the retry that follows will ask it for a fresh copy.
+                raise DownloadError(
+                    f"local mode is on but {source} is not there: check that the bot "
+                    f"and telegram-bot-api share the same volume"
+                )
+            local = copy_into(source, dest)
+            _reclaim(source)
+            return local
 
         stream = await self.bot.download_file(file.file_path, chunk_size=256 * 1024)
 
