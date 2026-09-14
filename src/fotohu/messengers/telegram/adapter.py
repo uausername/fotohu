@@ -15,11 +15,12 @@ from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.types import FSInputFile
 
 from ...core.download import copy_into, stream_to_file
 from ...core.errors import DownloadError, FileTooLarge, RetryableError
 from ...core.models import LocalFile, Platform
-from ..base import DeleteResult, MessengerAdapter
+from ..base import DeleteResult, MessengerAdapter, SentPhoto
 
 log = logging.getLogger(__name__)
 
@@ -56,10 +57,15 @@ def _reclaim(path: Path) -> None:
 #: deleteMessages (plural) takes at most this many ids per call.
 DELETE_BATCH = 100
 
+#: A caption is cut off past this by Telegram itself; we trim first so the text
+#: we send is the text that shows.
+CAPTION_LIMIT = 1024
+
 
 class TelegramAdapter(MessengerAdapter):
     platform = Platform.TELEGRAM
     supports_deletion = True
+    supports_photo = True
     delete_window_hours = DELETE_WINDOW_HOURS
 
     def __init__(self, bot: Bot, local_mode: bool = False) -> None:
@@ -130,6 +136,28 @@ class TelegramAdapter(MessengerAdapter):
         except TelegramRetryAfter as exc:
             raise RetryableError(f"flood control: retry after {exc.retry_after}s") from exc
         return str(message.message_id)
+
+    async def send_photo(
+        self, chat_id: str, photo: Path | str, caption: str | None = None
+    ) -> SentPhoto | None:
+        """Post a picture, uploading the bytes only when we have no handle yet.
+
+        The ``file_id`` handed back is what makes showing one photo to the whole
+        family cheap: the first send carries the bytes, every other send is that
+        string. Handles are per-bot, so it is only ever one of ours.
+        """
+        payload = FSInputFile(photo) if isinstance(photo, Path) else photo
+        try:
+            message = await self.bot.send_photo(
+                chat_id=int(chat_id),
+                photo=payload,
+                caption=(caption or "")[:CAPTION_LIMIT] or None,
+            )
+        except TelegramRetryAfter as exc:
+            raise RetryableError(f"flood control: retry after {exc.retry_after}s") from exc
+
+        largest = message.photo[-1].file_id if message.photo else None
+        return SentPhoto(message_id=str(message.message_id), reusable_ref=largest)
 
     async def delete_messages(self, chat_id: str, message_ids: list[str]) -> DeleteResult:
         result = DeleteResult()

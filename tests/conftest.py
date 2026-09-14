@@ -13,7 +13,7 @@ from fotohu.core.download import stream_to_file
 from fotohu.core.models import LocalFile, Platform
 from fotohu.db import connect, migrate
 from fotohu.db.repo import Repo
-from fotohu.messengers.base import DeleteResult, MessengerAdapter
+from fotohu.messengers.base import DeleteResult, MessengerAdapter, SentPhoto
 from fotohu.services.members import MemberService
 from fotohu.services.settings import SettingsService
 from fotohu.storage.registry import StorageRegistry
@@ -72,17 +72,28 @@ class FakeAdapter(MessengerAdapter):
         platform: Platform = Platform.TELEGRAM,
         supports_deletion: bool = True,
         delete_window_hours: int | None = 48,
+        supports_photo: bool = True,
     ) -> None:
         self.platform = platform
         self.supports_deletion = supports_deletion
         self.delete_window_hours = delete_window_hours
+        self.supports_photo = supports_photo
         self.download_limit = None
         self.files: dict[str, bytes] = {}
         self.sent: list[tuple[str, str]] = []
+        #: (chat, what was handed over, caption) per send_photo call. A Path means
+        #: the bytes went over the wire; a str means a handle was reused.
+        self.photos: list[tuple[str, Path | str, str | None]] = []
         self.deleted: list[tuple[str, list[str]]] = []
         #: message ids the fake should refuse to delete, and why
         self.undeletable: dict[str, str] = {}
+        #: bytes of every picture actually uploaded, kept because the sender
+        #: deletes its temp file as soon as the last recipient has it
+        self.photo_uploads: list[bytes] = []
+        #: chats where send_photo should blow up, and why
+        self.photo_errors: dict[str, str] = {}
         self._next_message_id = 9000
+        self._next_file_id = 0
 
     def put(self, ref: str, payload: bytes) -> str:
         self.files[ref] = payload
@@ -101,6 +112,20 @@ class FakeAdapter(MessengerAdapter):
         self.sent.append((chat_id, text))
         self._next_message_id += 1
         return str(self._next_message_id)
+
+    async def send_photo(self, chat_id: str, photo, caption: str | None = None):
+        if chat_id in self.photo_errors:
+            raise RuntimeError(self.photo_errors[chat_id])
+        self.photos.append((chat_id, photo, caption))
+        self._next_message_id += 1
+        if isinstance(photo, Path):
+            # Real bytes: Telegram would hand back a handle for re-sending.
+            self.photo_uploads.append(photo.read_bytes())
+            self._next_file_id += 1
+            ref = f"fake-file-{self._next_file_id}"
+        else:
+            ref = photo
+        return SentPhoto(message_id=str(self._next_message_id), reusable_ref=ref)
 
     async def delete_messages(self, chat_id: str, message_ids: list[str]) -> DeleteResult:
         self.deleted.append((chat_id, list(message_ids)))

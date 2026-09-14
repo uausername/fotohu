@@ -20,6 +20,7 @@ from ..core.models import Platform, UploadState
 from ..db.repo import Repo
 from ..i18n import t
 from ..messengers.base import MessengerAdapter
+from ..services.mirror import MirrorService
 from ..services.settings import SettingsService
 from ..storage.registry import StorageRegistry
 
@@ -42,6 +43,7 @@ class UploadWorker:
         adapters: dict[Platform, MessengerAdapter],
         temp_dir: Path,
         concurrency: int = 2,
+        mirror: MirrorService | None = None,
     ) -> None:
         self.repo = repo
         self.settings_service = settings_service
@@ -49,6 +51,7 @@ class UploadWorker:
         self.adapters = adapters
         self.temp_dir = temp_dir
         self.concurrency = max(1, concurrency)
+        self.mirror = mirror or MirrorService(repo, adapters, temp_dir)
         self._tasks: list[asyncio.Task] = []
         self._stop = asyncio.Event()
         #: Poked by the messenger handlers so a new photo starts uploading
@@ -77,16 +80,17 @@ class UploadWorker:
         log.info("upload worker started (%d slots)", self.concurrency)
 
     def _clear_temp_files(self) -> None:
-        """Drop half-downloaded files from an interrupted run.
+        """Drop half-downloaded files and unsent previews from an interrupted run.
 
-        They are useless — the requeued upload downloads afresh — and on a small
-        disk a few aborted videos add up.
+        They are useless — the requeued upload downloads afresh and builds its own
+        preview — and on a small disk a few aborted videos add up.
         """
-        for leftover in self.temp_dir.glob("upload-*"):
-            try:
-                leftover.unlink()
-            except OSError as exc:  # noqa: PERF203 - one bad file must not stop startup
-                log.warning("could not remove stale temp file %s: %s", leftover, exc)
+        for pattern in ("upload-*", "mirror-*"):
+            for leftover in self.temp_dir.glob(pattern):
+                try:
+                    leftover.unlink()
+                except OSError as exc:  # noqa: PERF203 - one bad file must not stop startup
+                    log.warning("could not remove stale temp file %s: %s", leftover, exc)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -137,6 +141,18 @@ class UploadWorker:
             await self._notify(adapter, record, t(settings.language, "err.no_storage"))
             return
 
+        async def show_the_family(local, remote) -> None:
+            # Runs the instant the cloud copy is verified, which is also when the
+            # upload row gets its own deadline — so the family sees the photo for
+            # exactly as long as the chat keeps the original.
+            await self.mirror.fan_out(
+                record=record,
+                person=person,
+                settings=settings,
+                source=local.path,
+                purge_after=pipeline.purge_deadline(settings),
+            )
+
         backend = await self.registry.build(storage_record)
         try:
             outcome = await pipeline.process_upload(
@@ -150,6 +166,7 @@ class UploadWorker:
                 person=person,
                 group=group,
                 temp_dir=self.temp_dir,
+                on_stored=show_the_family,
             )
         except FileTooLarge as exc:
             await self.repo.update_upload(

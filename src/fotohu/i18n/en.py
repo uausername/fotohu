@@ -97,6 +97,14 @@ TEXTS: dict[str, str] = {
     "last.empty": "Nothing uploaded yet.",
     "last.header": "<b>Recent uploads</b>\n",
 
+    "mirror.caption": "📸 <b>{name}</b>",
+    "mirror.caption_with_note": "📸 <b>{name}</b>\n{note}",
+    "mirror.echo": (
+        "♻️ That is a photo from the shared feed — it is already archived, no need "
+        "to send it again.\n\nTo archive your own copy, send the original "
+        "<b>as a file</b> from your phone (/howto)."
+    ),
+
     "admin.new_upload": "📸 <b>{name}</b> uploaded a photo:\n<code>{path}</code>",
     "admin.new_album": "📸 <b>{name}</b> uploaded an album: {n} photo(s).",
 }

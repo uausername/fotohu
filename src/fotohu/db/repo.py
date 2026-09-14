@@ -578,6 +578,11 @@ class Repo:
         purge_failed = (await cur.fetchone())["n"]
 
         cur = await self.conn.execute(
+            "SELECT COUNT(*) AS n FROM mirrors WHERE purge_error IS NOT NULL"
+        )
+        mirror_purge_failed = (await cur.fetchone())["n"]
+
+        cur = await self.conn.execute(
             "SELECT last_error, file_name, received_at FROM uploads"
             " WHERE state = 'failed' AND last_error IS NOT NULL"
             " ORDER BY received_at DESC LIMIT 5"
@@ -588,6 +593,7 @@ class Repo:
             "by_state": by_state,
             "month": month,
             "purge_failed": purge_failed,
+            "mirror_purge_failed": mirror_purge_failed,
             "recent_errors": errors,
         }
 
@@ -601,6 +607,94 @@ class Repo:
             for r in await cur.fetchall()
             if r["person_id"] is not None
         }
+
+    # ------------------------------------------------------------------- mirrors
+
+    async def mirror_targets(self, exclude_person_id: int | None = None) -> list[dict[str, Any]]:
+        """Everyone who should see a photo the moment it is archived.
+
+        One row per messenger account we can actually reach: an account without a
+        chat id has never spoken to the bot, so there is nowhere to send.
+        """
+        cur = await self.conn.execute(
+            "SELECT a.person_id, a.platform, a.chat_id, p.name"
+            "  FROM accounts a JOIN people p ON p.id = a.person_id"
+            " WHERE p.status = 'active' AND a.chat_id IS NOT NULL AND a.chat_id <> ''"
+            "   AND (? IS NULL OR a.person_id <> ?)"
+            " ORDER BY a.person_id",
+            (exclude_person_id, exclude_person_id),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def mirrored_chats(self, upload_id: int) -> set[tuple[str, str]]:
+        """(platform, chat) this upload has already been shown in.
+
+        The anti-duplicate check: one upload reaches one chat exactly once, no
+        matter how many times the row is looked at again.
+        """
+        cur = await self.conn.execute(
+            "SELECT platform, chat_id FROM mirrors WHERE upload_id = ?", (upload_id,)
+        )
+        return {(r["platform"], r["chat_id"]) for r in await cur.fetchall()}
+
+    async def record_mirror(
+        self,
+        *,
+        upload_id: int,
+        person_id: int | None,
+        platform: Platform | str,
+        chat_id: str,
+        message_id: str,
+        purge_after: datetime | None,
+    ) -> bool:
+        """Remember one shown photo. False when this chat already had it."""
+        cur = await self.conn.execute(
+            "INSERT OR IGNORE INTO mirrors"
+            " (upload_id, person_id, platform, chat_id, message_id, sent_at, purge_after)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                upload_id, person_id, str(platform), str(chat_id), str(message_id),
+                _now(), _ts(purge_after),
+            ),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def list_mirrors(self, upload_id: int) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM mirrors WHERE upload_id = ? ORDER BY id", (upload_id,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def mirrors_due_for_purge(self, limit: int = 200) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM mirrors"
+            " WHERE purged_at IS NULL AND purge_error IS NULL"
+            "   AND purge_after IS NOT NULL AND purge_after <= ?"
+            " ORDER BY purge_after LIMIT ?",
+            (_now(), limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def mark_mirrors_purged(self, mirror_ids: list[int]) -> None:
+        if not mirror_ids:
+            return
+        placeholders = ",".join("?" * len(mirror_ids))
+        await self.conn.execute(
+            f"UPDATE mirrors SET purged_at = ? WHERE id IN ({placeholders})",  # noqa: S608
+            (_now(), *mirror_ids),
+        )
+        await self.conn.commit()
+
+    async def mark_mirror_purge_failed(self, mirror_ids: list[int], error: str) -> None:
+        if not mirror_ids:
+            return
+        placeholders = ",".join("?" * len(mirror_ids))
+        await self.conn.execute(
+            f"UPDATE mirrors SET purge_error = ? WHERE id IN ({placeholders})",  # noqa: S608
+            (error[:300], *mirror_ids),
+        )
+        await self.conn.commit()
 
     # -------------------------------------------------------------- oauth states
 

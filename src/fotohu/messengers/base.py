@@ -14,6 +14,17 @@ from ..core.models import LocalFile, Platform
 
 
 @dataclass(slots=True)
+class SentPhoto:
+    """One photo the bot posted, as the workers need to see it."""
+
+    message_id: str
+    #: A handle for the very same picture, so showing it to the next person costs
+    #: no second upload (Telegram's ``file_id``). ``None`` when the messenger has
+    #: no such notion and every recipient means sending the bytes again.
+    reusable_ref: str | None = None
+
+
+@dataclass(slots=True)
 class DeleteResult:
     deleted: list[str] = field(default_factory=list)
     #: message id -> why it could not be removed (shown in the admin panel).
@@ -40,6 +51,11 @@ class MessengerAdapter(abc.ABC):
     #: Largest file we can pull back out of the messenger.
     download_limit: int | None = None
 
+    #: False for Viber: ``send_message`` only takes pictures by public URL, and a
+    #: bot that may live behind NAT has none to give. The mirror service checks
+    #: this instead of sending into the void.
+    supports_photo: bool = False
+
     @abc.abstractmethod
     async def download(
         self, file_ref: str, dest: Path, size_limit: int | None = None
@@ -51,6 +67,17 @@ class MessengerAdapter(abc.ABC):
         self, chat_id: str, text: str, reply_to: str | None = None
     ) -> str | None:
         """Send a plain message; return its id so it can be purged later."""
+
+    async def send_photo(
+        self, chat_id: str, photo: Path | str, caption: str | None = None
+    ) -> SentPhoto | None:
+        """Post a picture — as a picture, not as a file.
+
+        ``photo`` is either a path to send the bytes of, or a ``reusable_ref``
+        this same adapter handed back earlier. ``None`` means the messenger
+        cannot do it at all.
+        """
+        return None
 
     async def delete_messages(self, chat_id: str, message_ids: list[str]) -> DeleteResult:
         return DeleteResult(

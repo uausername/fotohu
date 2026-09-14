@@ -172,6 +172,7 @@ async def _check(config: Config) -> None:
     print(f"layout:    {settings.folder_mode}")
     print(f"purge:     {'on' if settings.purge_enabled else 'off'}, "
           f"{settings.purge_after_hours}h")
+    print(f"feed:      {'on' if settings.mirror_enabled else 'off'}")
     if settings.purge_exceeds_telegram_window:
         print("  warning: purge_after_hours >= 48 — Telegram will refuse those deletions")
     await ctx.shutdown()

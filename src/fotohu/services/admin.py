@@ -165,6 +165,14 @@ class AdminService:
                 f"{badge} <b>{person.name}</b> — {where}\n"
                 f"     {counters['count']} шт., {human_size(counters['bytes'])}"
             )
+
+        lines.append(
+            "\n📸 <b>Общая лента</b>: "
+            + ("включена" if settings.mirror_enabled else "выключена")
+            + "\nСохранённый снимок сразу показывается остальным в чате — картинкой, "
+            "а не файлом — и пропадает из чатов вместе с оригиналом, по тем же "
+            "правилам очистки. Второй раз в облако он при этом не попадает."
+        )
         return "\n".join(lines)
 
     async def person_card(self, person: Person) -> str:
@@ -375,6 +383,11 @@ class AdminService:
                 f"\n🧹 Не удалось удалить из чата: {stats['purge_failed']} шт."
                 f"\n     Обычная причина — прошло больше {TELEGRAM_DELETE_WINDOW_HOURS} ч "
                 f"(сейчас настроено {settings.purge_after_hours} ч)."
+            )
+        if stats.get("mirror_purge_failed"):
+            lines.append(
+                f"\n📸 Осталось в ленте у родных: {stats['mirror_purge_failed']} шт. "
+                "(снимок не удалось убрать из чужого чата — в облаке он, конечно, цел)."
             )
 
         if stats["recent_errors"]:

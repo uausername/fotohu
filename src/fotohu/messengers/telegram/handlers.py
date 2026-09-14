@@ -236,6 +236,27 @@ def _ack_album_later(
     task.add_done_callback(_ack_tasks.discard)
 
 
+def _is_our_own_photo(message: Message) -> bool:
+    """True when this is a photo from the shared feed, sent back to us.
+
+    The feed shows everyone what was just archived, and the natural reaction to a
+    good photo is to pass it on — including back to the bot. Forwarding it would
+    otherwise queue a second, messenger-compressed copy of something the archive
+    already holds, so the one thing we check is who the message originally came
+    from: us.
+    """
+    bot_id = message.bot.id if message.bot else None
+    if bot_id is None:
+        return False
+    origin = getattr(message, "forward_origin", None)
+    sender = getattr(origin, "sender_user", None)
+    if sender is not None and sender.id == bot_id:
+        return True
+    # Pre-Bot-API-7.0 field; still filled in by older servers.
+    legacy = getattr(message, "forward_from", None)
+    return bool(legacy is not None and legacy.id == bot_id)
+
+
 @router.message(F.document | F.photo | F.video | F.video_note | F.animation)
 async def on_media(message: Message, ctx: AppContext) -> None:
     lang = await _lang(ctx)
@@ -254,6 +275,11 @@ async def on_media(message: Message, ctx: AppContext) -> None:
     await ctx.members.touch_account(
         person, Platform.TELEGRAM, uid, user.username, str(message.chat.id)
     )
+
+    if _is_our_own_photo(message):
+        # Already archived once, by whoever actually took it.
+        await message.answer(t(lang, "mirror.echo"))
+        return
 
     media = _extract(message)
     if media is None:

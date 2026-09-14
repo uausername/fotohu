@@ -8,6 +8,7 @@ cloud *and* the provider's own digest matches what we sent.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -74,6 +75,7 @@ async def process_upload(
     person: Person,
     group: Group | None,
     temp_dir: Path,
+    on_stored: Callable[[LocalFile, RemoteFile], Awaitable[None]] | None = None,
 ) -> UploadOutcome:
     upload_id = record["id"]
     compressed = not record["lossless"]
@@ -141,6 +143,16 @@ async def process_upload(
             # hash we cannot compute locally would otherwise look unverified when
             # it is in fact the best-checked case we have.
             verified = True
+
+        if on_stored is not None:
+            # The one window where both copies exist: the cloud has the file and
+            # the original is still on our disk. Anything that needs the bytes
+            # after the fact — showing the family a preview, say — happens here
+            # instead of downloading them all over again.
+            try:
+                await on_stored(local, remote)
+            except Exception:  # noqa: BLE001 - a side effect must not undo an upload
+                log.exception("post-store step failed for %s", remote.path)
 
         return UploadOutcome(
             state=UploadState.DONE,
