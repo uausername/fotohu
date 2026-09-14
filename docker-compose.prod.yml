@@ -6,10 +6,13 @@
 # See docs/setup-vps.md for the full walkthrough.
 services:
   bot:
-    # A guard rail, not a tuning knob. FotoHu streams every file to disk and
-    # never decodes image pixels, so it idles near 150 MB and works near 250 MB.
-    # 512 MB leaves generous headroom while still stopping a runaway process
-    # from taking the whole 1 GB machine down with it (so you can still SSH in).
+    # A guard rail, not a tuning knob. FotoHu streams every file to disk, so it
+    # idles near 150 MB and works near 250 MB. The one thing it does decode is a
+    # photo on its way to the shared feed — and that is done at reduced scale
+    # (see src/fotohu/core/preview.py) precisely so a 50-megapixel original adds
+    # megabytes here rather than hundreds. 512 MB leaves generous headroom while
+    # still stopping a runaway process from taking the whole 1 GB machine down
+    # with it (so you can still SSH in).
     # Raise it if you run heavier concurrency; remove it on a larger box.
     mem_limit: 512m
     memswap_limit: 1g

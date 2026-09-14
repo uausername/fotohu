@@ -5,6 +5,12 @@ them. Telegram refuses photos over 10 MB or with wild dimensions, and a phone
 screen has no use for 60 megapixels anyway — so the copy the family sees is a
 small JPEG built here, while the copy in the cloud stays untouched.
 
+Memory is the constraint that shapes this file. Everything else in FotoHu
+streams bytes past without ever looking at them; a preview has to decode the
+picture, and a decoded 50-megapixel photo is ~150 MB of pixels before any
+resizing. The bot is expected to run on a 1 GB VPS, so the decoder is asked to
+scale the image down *while* reading it rather than after.
+
 Nothing in this module writes to the original: it is opened read-only, and the
 preview is always a new file.
 """
@@ -36,12 +42,21 @@ def make_preview(source: Path, dest: Path, max_side: int = MAX_SIDE) -> Path | N
 
     try:
         with Image.open(source) as img:
+            # Ask the decoder for a smaller picture *before* it decodes one.
+            # A JPEG can be unpacked at half, quarter or eighth scale, and on a
+            # 50-megapixel photo that is the difference between a few megabytes
+            # and a few hundred — which on a 1 GB VPS is the difference between
+            # a preview and an OOM kill. Mode is left alone (``None``) so a
+            # grayscale scan stays grayscale; formats that cannot do this ignore
+            # the request.
+            img.draft(None, (max_side, max_side))
             img.load()
             # EXIF says which way is up; a preview has no EXIF, so rotate now or
-            # half the family's portraits arrive lying on their side.
-            image = ImageOps.exif_transpose(img) or img
-            if image.mode not in ("RGB", "L"):
-                image = image.convert("RGB")
+            # half the family's portraits arrive lying on their side. In place,
+            # because the alternative is a second full-size copy of the very
+            # thing this file exists to keep small.
+            ImageOps.exif_transpose(img, in_place=True)
+            image = img if img.mode in ("RGB", "L") else img.convert("RGB")
             image.thumbnail((max_side, max_side), Image.LANCZOS)
             dest.parent.mkdir(parents=True, exist_ok=True)
             # No exif= argument: the preview deliberately carries no GPS trail.
