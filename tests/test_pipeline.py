@@ -339,6 +339,9 @@ class TestRestartRecovery:
         ctx.config.temp_dir.mkdir(parents=True, exist_ok=True)
         stale = ctx.config.temp_dir / "upload-7-IMG_0042.JPG"
         stale.write_bytes(b"half a photo")
+        # A preview left behind by a fan-out the last shutdown interrupted.
+        stale_preview = ctx.config.temp_dir / "mirror-7.jpg"
+        stale_preview.write_bytes(b"half a preview")
         keep = ctx.config.temp_dir / "something-else.txt"
         keep.write_bytes(b"not ours")
 
@@ -347,6 +350,7 @@ class TestRestartRecovery:
         await uploader.stop()
 
         assert not stale.exists()
+        assert not stale_preview.exists()
         assert keep.exists(), "startup cleanup must only touch its own temp files"
 
 

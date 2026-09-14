@@ -36,6 +36,11 @@ class Settings:
     #: Viber cannot delete messages; optionally nudge the sender to do it by hand.
     viber_purge_reminder: bool = False
 
+    #: Show every archived photo to the rest of the family, as a photo, right
+    #: when it lands — and take it back with the same purge sweep. On by default:
+    #: an archive nobody sees filling up is the problem this bot set out to fix.
+    mirror_enabled: bool = True
+
     dedupe_enabled: bool = True
     verify_hashes: bool = True
     max_file_mb: int = 2048

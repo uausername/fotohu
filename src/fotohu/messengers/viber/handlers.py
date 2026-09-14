@@ -213,6 +213,20 @@ async def _handle_command(ctx, adapter, user_id, name, text, known, lang) -> Non
             user_id, "Использование: /mode per_person | shared | per_group"
         )
         return
+    if command == "feed":
+        arg = argument.lower().strip()
+        if arg in ("on", "вкл", "off", "выкл"):
+            await ctx.settings.set("mirror_enabled", arg in ("on", "вкл"))
+        enabled = (await ctx.settings.get()).mirror_enabled
+        await adapter.send_text(
+            user_id,
+            f"Общая лента: {'включена' if enabled else 'выключена'}.\n"
+            "Сохранённый снимок показывается остальным в чате и пропадает "
+            "вместе с оригиналом. Переключить: /feed on | off\n"
+            "Показывать фото умеет только Telegram — Viber принимает картинки "
+            "от ботов лишь по публичной ссылке.",
+        )
+        return
     if command == "notify":
         arg = argument.lower().strip()
         if arg in ("on", "вкл", "off", "выкл"):
@@ -239,6 +253,7 @@ def _admin_help() -> str:
         "/folders — раскладка папок\n"
         "/mode per_person|shared|per_group — режим раскладки\n"
         "/purge [часы] — очистка чата\n"
+        "/feed on|off — показывать снимки остальным (только Telegram)\n"
         "/notify on|off — уведомлять о загрузках участников\n\n"
         "Полная панель с кнопками доступна в Telegram: /admin\n"
         "Виберу удаление сообщений ботом недоступно — это ограничение его API."

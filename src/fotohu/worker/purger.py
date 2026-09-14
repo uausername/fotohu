@@ -1,5 +1,9 @@
 """Removes archived photos from the messenger.
 
+Two kinds of message pass through here: what the family sent, and what the bot
+showed the rest of the family afterwards. Both leave on the same schedule — a
+photo that everyone saw for an hour is gone from every chat an hour later.
+
 The rules this worker exists to respect:
 
 * it only ever touches messages whose upload is ``done`` — the cloud copy must
@@ -73,17 +77,15 @@ class PurgeWorker:
         if not settings.purge_enabled:
             return 0
 
+        return await self._sweep_uploads(settings) + await self._sweep_mirrors()
+
+    async def _sweep_uploads(self, settings) -> int:
         due = await self.repo.due_for_purge()
         if not due:
             return 0
 
-        # Group by (platform, chat) so each batch is one API call.
-        buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
-        for row in due:
-            buckets[(row["platform"], row["chat_id"])].append(row)
-
         removed = 0
-        for (platform_name, chat_id), rows in buckets.items():
+        for (platform_name, chat_id), rows in _by_chat(due).items():
             adapter = self.adapters.get(Platform(platform_name))
             if adapter is None:
                 continue
@@ -96,19 +98,56 @@ class PurgeWorker:
             removed += await self._purge_chat(adapter, chat_id, rows, settings)
         return removed
 
+    async def _sweep_mirrors(self) -> int:
+        """Take back the copies shown to the rest of the family.
+
+        Simpler than the upload sweep in one way — every one of these is a message
+        the bot itself sent, so there is no reply to pair it with — and in one way
+        harder: the 48-hour clock runs from when *we* posted it, not from when the
+        original arrived.
+        """
+        due = await self.repo.mirrors_due_for_purge()
+        if not due:
+            return 0
+
+        removed = 0
+        for (platform_name, chat_id), rows in _by_chat(due).items():
+            adapter = self.adapters.get(Platform(platform_name))
+            if adapter is None:
+                continue
+            if not adapter.supports_deletion:
+                await self.repo.mark_mirror_purge_failed(
+                    [r["id"] for r in rows],
+                    f"{platform_name} has no message-deletion API",
+                )
+                continue
+
+            fresh, stale = _split_by_age(rows, adapter.delete_window_hours, "sent_at")
+            if stale:
+                await self.repo.mark_mirror_purge_failed(
+                    [r["id"] for r in stale],
+                    f"older than {adapter.delete_window_hours}h — "
+                    f"{adapter.platform} refuses to delete it",
+                )
+
+            for chunk in _chunks(fresh, BATCH):
+                by_message = {str(r["message_id"]): r["id"] for r in chunk}
+                result = await adapter.delete_messages(chat_id, list(by_message))
+                purged = [by_message[m] for m in result.deleted if m in by_message]
+                await self.repo.mark_mirrors_purged(purged)
+                removed += len(purged)
+                for message_id, reason in result.failed.items():
+                    if message_id in by_message:
+                        await self.repo.mark_mirror_purge_failed(
+                            [by_message[message_id]], reason
+                        )
+        return removed
+
     async def _purge_chat(
         self, adapter: MessengerAdapter, chat_id: str, rows: list[dict], settings
     ) -> int:
         window = adapter.delete_window_hours
-        fresh: list[dict] = []
-        stale: list[dict] = []
-        now = datetime.now()
-
-        for row in rows:
-            if window is not None and _age(row, now) > timedelta(hours=window):
-                stale.append(row)
-            else:
-                fresh.append(row)
+        fresh, stale = _split_by_age(rows, window, "received_at")
 
         if stale:
             await self.repo.mark_purge_failed(
@@ -153,9 +192,32 @@ class PurgeWorker:
         return removed
 
 
-def _age(row: dict, now: datetime) -> timedelta:
-    """How long ago the *user* sent the message — that is what the API measures."""
-    raw = row.get("received_at")
+def _by_chat(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
+    """Group by (platform, chat) so each delete batch is one API call."""
+    buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        buckets[(row["platform"], row["chat_id"])].append(row)
+    return buckets
+
+
+def _split_by_age(
+    rows: list[dict], window_hours: int | None, sent_key: str
+) -> tuple[list[dict], list[dict]]:
+    """Split into (still deletable, too old to bother asking)."""
+    now = datetime.now()
+    fresh: list[dict] = []
+    stale: list[dict] = []
+    for row in rows:
+        if window_hours is not None and _age(row, now, sent_key) > timedelta(hours=window_hours):
+            stale.append(row)
+        else:
+            fresh.append(row)
+    return fresh, stale
+
+
+def _age(row: dict, now: datetime, sent_key: str = "received_at") -> timedelta:
+    """How long ago the message was sent — that is what the API measures."""
+    raw = row.get(sent_key)
     if not raw:
         return timedelta(0)
     try:

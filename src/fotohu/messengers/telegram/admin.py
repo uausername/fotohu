@@ -324,11 +324,25 @@ async def cb_family(query: CallbackQuery, ctx: AppContext) -> None:
     ]
     rows.append([btn("🎟 Создать приглашение", "adm:inv")])
     rows.append(
+        [btn(f"{'✅' if settings.mirror_enabled else '⬜️'} Общая лента фото",
+             "adm:fam:mirror")]
+    )
+    rows.append(
         [btn(f"{'🔔' if settings.notify_admin_on_upload else '🔕'} Уведомлять о загрузках",
              "adm:fam:notify")]
     )
     rows.append(BACK)
     await show(query, await service(ctx).family_overview(), kb(*rows))
+
+
+@router.callback_query(F.data == "adm:fam:mirror")
+async def cb_family_mirror(query: CallbackQuery, ctx: AppContext) -> None:
+    if not await guard(query, ctx):
+        return
+    settings = await ctx.settings.get()
+    await ctx.settings.set("mirror_enabled", not settings.mirror_enabled)
+    await query.answer("Готово")
+    await cb_family(query, ctx)
 
 
 @router.callback_query(F.data == "adm:fam:notify")
