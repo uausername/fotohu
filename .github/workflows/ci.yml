@@ -1,0 +1,40 @@
+# Прогоняет то же, что разработчик запускает у себя: линтер и тесты.
+#
+# Смысл файла ровно один — чтобы «у меня всё зелёное» перестало быть чьим-то
+# честным словом. Правка, прилетевшая с другой машины, из браузера или от
+# постороннего человека, проверяется теми же командами, что и своя.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Правки в PR часто идут пачкой; гонять устаревшие прогоны незачем.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.11 — та же версия, что в Dockerfile и на боевой машине.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -e ".[dev]"
+
+      - name: Линтер
+        run: ruff check src tests
+
+      - name: Тесты
+        run: pytest -q

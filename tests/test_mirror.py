@@ -352,6 +352,57 @@ class TestPreview:
         with Image.open(tmp_path / "upright.jpg") as preview:
             assert preview.size == (200, 400)
 
+    def test_a_big_jpeg_is_scaled_down_while_it_is_decoded(self, tmp_path, monkeypatch):
+        """The preview must never cost a full-resolution decode.
+
+        A 50-megapixel photo is ~150 MB of pixels once unpacked, and the bot is
+        expected to live inside a 512 MB container on a 1 GB VPS. Asking the JPEG
+        decoder to work at 1/2, 1/4 or 1/8 scale keeps that from ever being
+        allocated — so what is tested here is that we ask, and that the picture
+        still comes out the right size.
+        """
+        from PIL.JpegImagePlugin import JpegImageFile
+
+        asked: list[tuple] = []
+        original = JpegImageFile.draft
+
+        def record(self, mode, size):
+            asked.append((mode, size))
+            return original(self, mode, size)
+
+        monkeypatch.setattr(JpegImageFile, "draft", record)
+        source = tmp_path / "big.jpg"
+        Image.new("RGB", (6000, 4000), (200, 40, 40)).save(source, format="JPEG")
+
+        make_preview(source, tmp_path / "small.jpg")
+
+        # Ours is the first call — before any pixels exist. (Pillow's own
+        # thumbnail() asks again afterwards, which is a no-op by then.)
+        assert asked[0] == (None, (2560, 2560))
+        with Image.open(tmp_path / "small.jpg") as preview:
+            assert preview.size == (2560, 1707)
+
+    def test_a_grayscale_scan_stays_grayscale(self, tmp_path):
+        # draft() is asked for no particular mode precisely so this holds.
+        source = tmp_path / "scan.jpg"
+        Image.new("L", (4000, 3000), 128).save(source, format="JPEG")
+
+        make_preview(source, tmp_path / "preview.jpg")
+
+        with Image.open(tmp_path / "preview.jpg") as preview:
+            assert preview.mode == "L"
+
+    def test_a_format_that_cannot_be_drafted_still_works(self, tmp_path):
+        # PNG ignores the request; the resize afterwards has to carry it alone.
+        source = tmp_path / "shot.png"
+        Image.new("RGBA", (4000, 3000), (10, 20, 30, 255)).save(source, format="PNG")
+
+        assert make_preview(source, tmp_path / "preview.jpg") is not None
+
+        with Image.open(tmp_path / "preview.jpg") as preview:
+            assert preview.size == (2560, 1920)
+            assert preview.format == "JPEG"  # RGBA would not survive as JPEG
+
     def test_something_that_is_not_an_image_yields_nothing(self, tmp_path):
         source = tmp_path / "notes.txt"
         source.write_bytes(b"just some text")
