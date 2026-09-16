@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from . import images  # noqa: F401 - imported for its side effect: HEIC support
+
 log = logging.getLogger(__name__)
 
 # EXIF tag ids, from the spec. Preferred order: original > digitised > file change.

@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from . import images  # noqa: F401 - imported for its side effect: HEIC support
+
 log = logging.getLogger(__name__)
 
 #: Longest side of the preview, in pixels. Telegram re-encodes anything it is

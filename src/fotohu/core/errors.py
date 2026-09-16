@@ -28,7 +28,16 @@ class QuotaExceeded(StorageError):
 
 
 class RetryableError(FotoHuError):
-    """Transient; the worker should back off and try again."""
+    """Transient; the worker should back off and try again.
+
+    ``retry_after`` is how long the other side asked us to wait, in seconds,
+    when it bothered to say — Telegram's flood control always does. Waiting
+    exactly that long beats guessing, and beats giving up.
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class FileTooLarge(FotoHuError):

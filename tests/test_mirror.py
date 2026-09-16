@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -15,6 +17,7 @@ from fotohu.core.models import Platform, Role, SourceKind
 from fotohu.core.preview import make_preview
 from fotohu.messengers.telegram import handlers
 from fotohu.messengers.telegram.adapter import CAPTION_LIMIT, TelegramAdapter
+from fotohu.services import mirror
 from fotohu.worker.purger import PurgeWorker
 
 
@@ -418,6 +421,148 @@ class TestPreview:
 
         with Image.open(tmp_path / "preview.jpg") as preview:
             assert not preview.getexif().get_ifd(0x8769)
+
+
+class TestIPhonePhotos:
+    """HEIC is what an iPhone sends when told to send a file — and it is told to.
+
+    Pillow cannot read it unaided, and for a while nothing said so: the photo
+    reached the cloud intact, then vanished from the conversation without ever
+    being shown, and got filed under the day it was sent rather than the day it
+    was taken.
+    """
+
+    def test_reading_a_heic_is_what_the_code_itself_brings(self, tmp_path, heic_with_exif):
+        """Asked of a fresh interpreter, because registration is global.
+
+        Teaching Pillow a format changes the whole process, so any test that has
+        already imported anything of ours would answer yes no matter who did it
+        — including the test itself. A subprocess that imports one module and
+        nothing else is the only place this question has a real answer.
+        """
+        source = tmp_path / "IMG_0042.HEIC"
+        source.write_bytes(heic_with_exif())
+        script = (
+            "from pathlib import Path\n"
+            "from fotohu.core.preview import make_preview\n"
+            f"print('shown' if make_preview(Path({str(source)!r}),"
+            f" Path({str(tmp_path / 'preview.jpg')!r})) else 'nothing')\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+        )
+
+        assert result.stdout.strip() == "shown", result.stderr
+
+    async def test_an_iphone_photo_reaches_the_family_feed(
+        self, ctx, adapter, tmp_path, heic_with_exif
+    ):
+        await make_storage(ctx, tmp_path)
+        sender, *_ = await family(ctx, chats=("100", "200"))
+        payload = heic_with_exif()
+        adapter.put("ref-1", payload)
+        await ctx.repo.create_upload(media("ref-1", name="IMG_0042.HEIC"), sender.id)
+
+        await drain(worker(ctx, adapter))
+
+        assert [row[0] for row in adapter.photos] == ["200"]
+        # What arrives is a JPEG: the family's chat cannot show HEIC either.
+        with Image.open(BytesIO(adapter.photo_uploads[0])) as preview:
+            assert preview.format == "JPEG"
+
+    async def test_it_is_filed_by_the_day_it_was_taken(
+        self, ctx, adapter, tmp_path, heic_with_exif
+    ):
+        await make_storage(ctx, tmp_path)
+        sender, *_ = await family(ctx, chats=("100", "200"))
+        adapter.put("ref-1", heic_with_exif("2019:07:14 18:30:00"))
+        await ctx.repo.create_upload(media("ref-1", name="IMG_0042.HEIC"), sender.id)
+
+        await drain(worker(ctx, adapter))
+
+        row = (await ctx.repo.recent_uploads())[0]
+        assert row["date_source"] == "exif"
+        assert "2019/2019-07" in row["remote_path"]
+
+    async def test_the_archived_original_is_still_untouched_heic(
+        self, ctx, adapter, tmp_path, heic_with_exif
+    ):
+        await make_storage(ctx, tmp_path)
+        sender, *_ = await family(ctx, chats=("100", "200"))
+        payload = heic_with_exif()
+        adapter.put("ref-1", payload)
+        await ctx.repo.create_upload(media("ref-1", name="IMG_0042.HEIC"), sender.id)
+
+        await drain(worker(ctx, adapter))
+
+        row = (await ctx.repo.recent_uploads())[0]
+        # Reading inside the file must not have changed a byte of it.
+        assert (tmp_path / "cloud" / row["remote_path"]).read_bytes() == payload
+
+
+class TestFloodControl:
+    """Telegram answers "not so fast" exactly when an album is being shown."""
+
+    async def test_a_refusal_is_waited_out_rather_than_dropped(
+        self, ctx, adapter, tmp_path, jpeg_bytes, monkeypatch
+    ):
+        waited: list[float] = []
+
+        async def instant_sleep(delay: float) -> None:
+            waited.append(delay)
+
+        monkeypatch.setattr(mirror.asyncio, "sleep", instant_sleep)
+        await make_storage(ctx, tmp_path)
+        sender, *_ = await family(ctx, chats=("100", "200"))
+        # The first attempt on that chat is refused; the retry gets through.
+        adapter.flood_once["200"] = 7.0
+        adapter.put("ref-1", jpeg_bytes)
+        await ctx.repo.create_upload(media("ref-1"), sender.id)
+
+        await drain(worker(ctx, adapter))
+
+        assert waited == [7.0], "the pause Telegram asked for, not a guess"
+        assert [row[0] for row in adapter.photos] == ["200"]
+        row = (await ctx.repo.recent_uploads())[0]
+        assert [m["chat_id"] for m in await ctx.repo.list_mirrors(row["id"])] == ["200"]
+
+    async def test_an_unreasonable_pause_is_capped(
+        self, ctx, adapter, tmp_path, jpeg_bytes, monkeypatch
+    ):
+        waited: list[float] = []
+
+        async def instant_sleep(delay: float) -> None:
+            waited.append(delay)
+
+        monkeypatch.setattr(mirror.asyncio, "sleep", instant_sleep)
+        await make_storage(ctx, tmp_path)
+        sender, *_ = await family(ctx, chats=("100", "200"))
+        adapter.flood_once["200"] = 3600.0  # an hour: a worker slot is not sitting there
+        adapter.put("ref-1", jpeg_bytes)
+        await ctx.repo.create_upload(media("ref-1"), sender.id)
+
+        await drain(worker(ctx, adapter))
+
+        assert waited == [mirror.MAX_FLOOD_WAIT]
+
+    async def test_a_second_refusal_costs_only_that_chat(
+        self, ctx, adapter, tmp_path, jpeg_bytes, monkeypatch
+    ):
+        async def instant_sleep(delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(mirror.asyncio, "sleep", instant_sleep)
+        await make_storage(ctx, tmp_path)
+        sender, *_ = await family(ctx)
+        adapter.photo_errors["200"] = "flood control: retry after 5s"
+        adapter.put("ref-1", jpeg_bytes)
+        await ctx.repo.create_upload(media("ref-1"), sender.id)
+
+        await drain(worker(ctx, adapter))
+
+        assert [row[0] for row in adapter.photos] == ["300"]
+        assert (await ctx.repo.recent_uploads())[0]["state"] == "done"
 
 
 class TestAlbums:

@@ -19,11 +19,13 @@ Three rules hold it together:
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from datetime import datetime
 from pathlib import Path
 
+from ..core.errors import RetryableError
 from ..core.models import Person, Platform
 from ..core.preview import make_preview
 from ..db.repo import Repo
@@ -34,6 +36,14 @@ log = logging.getLogger(__name__)
 
 #: Original captions can be long; the feed shows the beginning and stops there.
 CAPTION_TEXT_LIMIT = 300
+
+#: How long we are willing to sit out Telegram's flood control before giving up
+#: on one chat. Longer than any pause it normally asks for, short enough that a
+#: worker slot is never parked on it.
+MAX_FLOOD_WAIT = 60.0
+
+#: Used when the refusal carries no number of its own.
+FLOOD_FALLBACK_WAIT = 5.0
 
 
 class MirrorService:
@@ -71,7 +81,13 @@ class MirrorService:
 
         preview = self.temp_dir / f"mirror-{record['id']}.jpg"
         if make_preview(source, preview) is None:
-            # Not a picture — a video, a RAW, a document. Nothing to show.
+            # Not a picture Pillow can read — a video, a RAW, a document. Said
+            # out loud, because from the outside "the feed skipped this one" and
+            # "the feed is broken" look identical.
+            log.info(
+                "nothing to show for %s: %s is not an image we can read",
+                record.get("file_name"), source.suffix or "this file",
+            )
             return 0
 
         caption = self._caption(record, person, settings)
@@ -83,8 +99,8 @@ class MirrorService:
             for target in targets:
                 adapter = self.adapters[Platform(target["platform"])]
                 try:
-                    sent = await adapter.send_photo(
-                        target["chat_id"], handle or preview, caption
+                    sent = await self._send(
+                        adapter, target["chat_id"], handle or preview, caption
                     )
                 except Exception as exc:  # noqa: BLE001 - one bad chat, not a bad upload
                     log.warning(
@@ -110,6 +126,25 @@ class MirrorService:
         if shown:
             log.info("showed %s to %d chat(s)", record.get("file_name"), shown)
         return shown
+
+    async def _send(self, adapter: MessengerAdapter, chat_id: str, photo, caption: str):
+        """Send one photo, sitting out flood control once if Telegram asks for it.
+
+        An album is what provokes it: ten photos into the same chat, each the
+        moment its upload lands. Telegram answers "not so fast, wait N seconds",
+        and dropping the rest of the album on that refusal is precisely how a
+        working feature comes to look broken — the sender sees nothing arrive
+        and the log says one word about flooding.
+        """
+        try:
+            return await adapter.send_photo(chat_id, photo, caption)
+        except RetryableError as exc:
+            delay = min(exc.retry_after or FLOOD_FALLBACK_WAIT, MAX_FLOOD_WAIT)
+            log.info(
+                "flood control in %s; waiting %.0fs and trying once more", chat_id, delay
+            )
+            await asyncio.sleep(delay)
+            return await adapter.send_photo(chat_id, photo, caption)
 
     async def _targets(self, record: dict, person: Person | None) -> list[dict]:
         """Who still needs to see this photo, each chat at most once.
