@@ -10,6 +10,7 @@ import pytest
 from fotohu.config import Config, TelegramConfig, ViberConfig
 from fotohu.context import AppContext
 from fotohu.core.download import stream_to_file
+from fotohu.core.errors import RetryableError
 from fotohu.core.models import LocalFile, Platform
 from fotohu.db import connect, migrate
 from fotohu.db.repo import Repo
@@ -92,6 +93,9 @@ class FakeAdapter(MessengerAdapter):
         self.photo_uploads: list[bytes] = []
         #: chats where send_photo should blow up, and why
         self.photo_errors: dict[str, str] = {}
+        #: chats whose *first* send_photo is refused by flood control, and the
+        #: pause Telegram asks for in return
+        self.flood_once: dict[str, float] = {}
         self._next_message_id = 9000
         self._next_file_id = 0
 
@@ -114,6 +118,9 @@ class FakeAdapter(MessengerAdapter):
         return str(self._next_message_id)
 
     async def send_photo(self, chat_id: str, photo, caption: str | None = None):
+        if chat_id in self.flood_once:
+            delay = self.flood_once.pop(chat_id)
+            raise RetryableError(f"flood control: retry after {delay}s", delay)
         if chat_id in self.photo_errors:
             raise RuntimeError(self.photo_errors[chat_id])
         self.photos.append((chat_id, photo, caption))
@@ -169,6 +176,34 @@ def jpeg_with_exif():
         exif.get_ifd(0x8769)[0x9003] = taken  # DateTimeOriginal
         buffer = BytesIO()
         image.save(buffer, format="JPEG", exif=exif)
+        return buffer.getvalue()
+
+    return _make
+
+
+@pytest.fixture
+def heic_with_exif():
+    """An iPhone photo as it really arrives: HEIC, sent as a file, with EXIF.
+
+    Pillow cannot read this format on its own — that is the whole point of the
+    fixture. Everything downstream of it (capture date, preview, feed) works
+    only because pillow-heif is a declared dependency.
+    """
+
+    def _make(taken: str = "2019:07:14 18:30:00", size=(1024, 768)) -> bytes:
+        from io import BytesIO
+
+        import pillow_heif
+        from PIL import Image
+
+        image = Image.new("RGB", size, (90, 140, 210))
+        exif = Image.Exif()
+        exif.get_ifd(0x8769)[0x9003] = taken  # DateTimeOriginal
+        buffer = BytesIO()
+        # Written through pillow-heif's own encoder on purpose: registering the
+        # opener here would hand Pillow the very ability the code under test is
+        # supposed to provide, and the test would pass with the fix removed.
+        pillow_heif.from_pillow(image).save(buffer, quality=60, exif=exif.tobytes())
         return buffer.getvalue()
 
     return _make

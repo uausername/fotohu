@@ -134,7 +134,9 @@ class TelegramAdapter(MessengerAdapter):
             else:
                 raise
         except TelegramRetryAfter as exc:
-            raise RetryableError(f"flood control: retry after {exc.retry_after}s") from exc
+            raise RetryableError(
+                f"flood control: retry after {exc.retry_after}s", exc.retry_after
+            ) from exc
         return str(message.message_id)
 
     async def send_photo(
@@ -154,7 +156,9 @@ class TelegramAdapter(MessengerAdapter):
                 caption=(caption or "")[:CAPTION_LIMIT] or None,
             )
         except TelegramRetryAfter as exc:
-            raise RetryableError(f"flood control: retry after {exc.retry_after}s") from exc
+            raise RetryableError(
+                f"flood control: retry after {exc.retry_after}s", exc.retry_after
+            ) from exc
 
         largest = message.photo[-1].file_id if message.photo else None
         return SentPhoto(message_id=str(message.message_id), reusable_ref=largest)

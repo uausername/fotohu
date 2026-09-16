@@ -10,6 +10,9 @@ dependencies = [
     "httpx>=0.27",
     "cryptography>=42",
     "Pillow>=10.3",
+    # HEIC: what an iPhone hands over when a photo is sent as a file. Without
+    # it those photos are archived, but cannot be dated or shown in the feed.
+    "pillow-heif>=1.0",
     "python-dotenv>=1.0",
     "truststore>=0.10",
 ]
