@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from ..core.models import Platform, UploadState
 from ..db.repo import Repo
 from ..i18n import t
 from ..messengers.base import MessengerAdapter
+from ..services.albums import AlbumService
 from ..services.mirror import MirrorService
 from ..services.settings import SettingsService
 from ..storage.registry import StorageRegistry
@@ -34,6 +36,16 @@ BACKOFF_MINUTES = [1, 5, 15, 60, 240]
 ANNOUNCED_MEMORY = 512
 
 
+def _is_photo_or_video(path: Path) -> bool:
+    """OneDrive album bundles only take images and videos — everything else
+    (a scanned document sent as a "photo", say) would just 400 on add."""
+    kind = mimetypes.guess_type(path.name)[0] or ""
+    if kind.startswith("image/") or kind.startswith("video/"):
+        return True
+    # mimetypes does not know phone formats like HEIC/HEIF out of the box.
+    return path.suffix.lower() in {".heic", ".heif"}
+
+
 class UploadWorker:
     def __init__(
         self,
@@ -44,6 +56,7 @@ class UploadWorker:
         temp_dir: Path,
         concurrency: int = 2,
         mirror: MirrorService | None = None,
+        albums: AlbumService | None = None,
     ) -> None:
         self.repo = repo
         self.settings_service = settings_service
@@ -52,6 +65,7 @@ class UploadWorker:
         self.temp_dir = temp_dir
         self.concurrency = max(1, concurrency)
         self.mirror = mirror or MirrorService(repo, adapters, temp_dir)
+        self.albums = albums
         self._tasks: list[asyncio.Task] = []
         self._stop = asyncio.Event()
         #: Poked by the messenger handlers so a new photo starts uploading
@@ -153,6 +167,23 @@ class UploadWorker:
                 purge_after=pipeline.purge_deadline(settings),
             )
 
+        async def add_to_album(local, remote) -> None:
+            # A missing album link, an expired Graph token, a bundle that got
+            # deleted from the OneDrive side — none of it may undo an upload
+            # that is already verified in the cloud, so failures here are
+            # logged and swallowed, same as a mirror chat that refuses a photo.
+            if self.albums is None or not _is_photo_or_video(local.path):
+                return
+            try:
+                if await self.albums.add_to_default_album(remote.remote_id):
+                    log.info("added %s to the OneDrive album", remote.path)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not add %s to the OneDrive album: %s", remote.path, exc)
+
+        async def on_stored(local, remote) -> None:
+            await show_the_family(local, remote)
+            await add_to_album(local, remote)
+
         backend = await self.registry.build(storage_record)
         try:
             outcome = await pipeline.process_upload(
@@ -166,7 +197,7 @@ class UploadWorker:
                 person=person,
                 group=group,
                 temp_dir=self.temp_dir,
-                on_stored=show_the_family,
+                on_stored=on_stored,
             )
         except FileTooLarge as exc:
             await self.repo.update_upload(

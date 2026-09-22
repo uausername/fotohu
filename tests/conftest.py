@@ -15,6 +15,7 @@ from fotohu.core.models import LocalFile, Platform
 from fotohu.db import connect, migrate
 from fotohu.db.repo import Repo
 from fotohu.messengers.base import DeleteResult, MessengerAdapter, SentPhoto
+from fotohu.services.albums import AlbumService
 from fotohu.services.members import MemberService
 from fotohu.services.settings import SettingsService
 from fotohu.storage.registry import StorageRegistry
@@ -59,10 +60,12 @@ async def ctx(config: Config):
             rclone_binary=config.rclone_binary,
             rclone_config=config.rclone_config,
         ),
+        albums=AlbumService(settings, config.secret_key),
     )
     config.temp_dir.mkdir(parents=True, exist_ok=True)
     yield context
     await conn.close()
+    await context.albums.close()
 
 
 class FakeAdapter(MessengerAdapter):

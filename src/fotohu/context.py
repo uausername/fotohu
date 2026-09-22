@@ -14,6 +14,7 @@ from .db import connect, migrate
 from .db.repo import Repo
 from .i18n import t
 from .messengers.base import MessengerAdapter
+from .services.albums import AlbumService
 from .services.members import MemberService
 from .services.settings import SettingsService
 from .storage.registry import StorageRegistry
@@ -31,6 +32,7 @@ class AppContext:
     settings: SettingsService
     members: MemberService
     storage: StorageRegistry
+    albums: AlbumService
     adapters: dict[Platform, MessengerAdapter] = field(default_factory=dict)
     uploader: UploadWorker | None = None
     purger: PurgeWorker | None = None
@@ -54,6 +56,7 @@ class AppContext:
             adapters=self.adapters,
             temp_dir=self.config.temp_dir,
             concurrency=self.config.worker_concurrency,
+            albums=self.albums,
         )
         self.purger = PurgeWorker(
             repo=self.repo, settings_service=self.settings, adapters=self.adapters
@@ -74,6 +77,7 @@ class AppContext:
             await self.storage.close()
         except Exception as exc:  # noqa: BLE001
             log.warning("storage did not close cleanly: %s", exc)
+        await self.albums.close()
         await self.conn.close()
 
 
@@ -104,4 +108,5 @@ async def build_context(config: Config) -> AppContext:
             rclone_binary=config.rclone_binary,
             rclone_config=config.rclone_config,
         ),
+        albums=AlbumService(settings, config.secret_key),
     )
