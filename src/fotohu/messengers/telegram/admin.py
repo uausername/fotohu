@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import F, Router
@@ -11,9 +12,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ...context import AppContext
+from ...core.errors import StorageError
 from ...core.models import FolderMode, Platform, Role
 from ...i18n import t
 from ...services.admin import MODE_LABELS, POLICY_LABELS, AdminService
+from ...storage.graph_albums import DeviceAuth, GraphAlbumClient
 from ...storage.registry import backend_choices, get_backend_class
 
 log = logging.getLogger(__name__)
@@ -32,6 +35,7 @@ class Ask(StatesGroup):
     person_folder = State()
     rclone_remote = State()
     local_path = State()
+    album_name = State()
 
 
 def kb(*rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup:
@@ -46,7 +50,7 @@ BACK = [btn("‹ Назад", "adm:menu")]
 
 
 def service(ctx: AppContext) -> AdminService:
-    return AdminService(ctx.repo, ctx.settings, ctx.members, ctx.storage)
+    return AdminService(ctx.repo, ctx.settings, ctx.members, ctx.storage, ctx.albums)
 
 
 async def is_admin(ctx: AppContext, user_id: int | str) -> bool:
@@ -94,6 +98,7 @@ MENU_KB = kb(
     [btn("👨‍👩‍👧 Семья", "adm:family"), btn("🗂 Группы", "adm:groups")],
     [btn("📁 Раскладка папок", "adm:folders")],
     [btn("🧹 Очистка чата", "adm:purge"), btn("🎚 Качество", "adm:quality")],
+    [btn("🖼 Альбом OneDrive", "adm:album")],
     [btn("📊 Статус", "adm:status")],
 )
 
@@ -799,6 +804,166 @@ async def on_local_path(message: Message, ctx: AppContext, state: FSMContext) ->
     await state.clear()
     result = await svc.test_storage(data["account_id"])
     await message.answer(result.message, reply_markup=MENU_KB)
+
+
+# ----------------------------------------------------------------------- album
+
+
+async def _render_album(event: Message | CallbackQuery, ctx: AppContext) -> None:
+    settings = await ctx.settings.get()
+    linked = bool(settings.album_credentials_enc)
+    rows = []
+    if not linked:
+        rows.append([btn("🔗 Подключить", "adm:album:link")])
+    else:
+        rows.append([btn("📂 Выбрать альбом", "adm:album:list")])
+        rows.append([btn("＋ Создать новый", "adm:album:new")])
+        if settings.album_bundle_id:
+            rows.append(
+                [btn(
+                    f"{'✅' if settings.album_enabled else '⬜️'} Автодобавление",
+                    "adm:album:toggle",
+                )]
+            )
+        rows.append([btn("🚫 Отвязать аккаунт", "adm:album:unlink")])
+    rows.append(BACK)
+    text = await service(ctx).album_overview()
+    if isinstance(event, CallbackQuery):
+        await show(event, text, kb(*rows))
+    else:
+        await event.answer(text, reply_markup=kb(*rows))
+
+
+@router.callback_query(F.data == "adm:album")
+async def cb_album(query: CallbackQuery, ctx: AppContext) -> None:
+    if not await guard(query, ctx):
+        return
+    await _render_album(query, ctx)
+
+
+async def _finish_device_link(ctx: AppContext, chat_id: str, auth: DeviceAuth) -> None:
+    """Runs in the background: the admin still has to type the code in at
+    microsoft.com while this polls, which can take minutes."""
+    adapter = ctx.adapters.get(Platform.TELEGRAM)
+    try:
+        credentials = await GraphAlbumClient.poll_device_auth(auth)
+        await ctx.albums.save_link(credentials)
+        text = "✅ Аккаунт OneDrive подключён для альбомов. Теперь выберите альбом в /admin."
+    except Exception as exc:  # noqa: BLE001 - report it to the admin, do not crash the bot
+        log.warning("device sign-in for album link did not finish: %s", exc)
+        text = f"⚠️ Не удалось подключить аккаунт: {exc}"
+    if adapter is not None:
+        await adapter.send_text(chat_id, text)
+
+
+@router.callback_query(F.data == "adm:album:link")
+async def cb_album_link(query: CallbackQuery, ctx: AppContext) -> None:
+    if not await guard(query, ctx):
+        return
+    try:
+        auth = await GraphAlbumClient.begin_device_auth()
+    except StorageError as exc:
+        await show(query, f"⚠️ {exc}", kb(BACK))
+        return
+    chat_id = str(query.message.chat.id) if query.message else str(query.from_user.id)
+    asyncio.create_task(_finish_device_link(ctx, chat_id, auth))
+    await show(
+        query,
+        "🔗 <b>Подключение альбома OneDrive</b>\n\n"
+        f'Откройте <a href="{auth.verification_uri}">{auth.verification_uri}</a> и введите код:\n\n'
+        f"<code>{auth.user_code}</code>\n\n"
+        f"Код действует {auth.expires_in // 60} мин. Бот сам напишет, когда подключение "
+        "завершится — эту страницу можно закрыть.",
+        kb(BACK),
+    )
+
+
+@router.callback_query(F.data == "adm:album:list")
+async def cb_album_list(query: CallbackQuery, ctx: AppContext, state: FSMContext) -> None:
+    if not await guard(query, ctx):
+        return
+    try:
+        albums = await ctx.albums.list_albums()
+    except Exception as exc:  # noqa: BLE001
+        await show(query, f"⚠️ Не удалось получить список альбомов: {exc}", kb(BACK))
+        return
+    if not albums:
+        await show(
+            query,
+            "Альбомов пока нет — создайте новый.",
+            kb([btn("＋ Создать новый", "adm:album:new")], BACK),
+        )
+        return
+    await state.update_data(albums=[{"id": a.id, "name": a.name} for a in albums])
+    rows = [[btn(a.name, f"adm:album:pick:{i}")] for i, a in enumerate(albums)]
+    rows.append([btn("‹ Назад", "adm:album")])
+    await show(query, "Выберите альбом:", kb(*rows))
+
+
+@router.callback_query(F.data.regexp(r"^adm:album:pick:\d+$"))
+async def cb_album_pick(query: CallbackQuery, ctx: AppContext, state: FSMContext) -> None:
+    if not await guard(query, ctx):
+        return
+    index = int(query.data.rsplit(":", 1)[1])
+    data = await state.get_data()
+    albums = data.get("albums") or []
+    if index >= len(albums):
+        await cb_album_list(query, ctx, state)
+        return
+    chosen = albums[index]
+    await ctx.albums.choose_album(chosen["id"], chosen["name"])
+    await query.answer("Готово")
+    await _render_album(query, ctx)
+
+
+@router.callback_query(F.data == "adm:album:new")
+async def cb_album_new(query: CallbackQuery, ctx: AppContext, state: FSMContext) -> None:
+    if not await guard(query, ctx):
+        return
+    if not (await ctx.settings.get()).album_credentials_enc:
+        await query.answer("Сначала подключите аккаунт", show_alert=True)
+        return
+    await state.set_state(Ask.album_name)
+    await show(
+        query,
+        "Введите название нового альбома, например <code>Семейный архив</code>.",
+        kb([btn("‹ Отмена", "adm:album")]),
+    )
+
+
+@router.message(Ask.album_name)
+async def on_album_name(message: Message, ctx: AppContext, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Пустое название.")
+        return
+    try:
+        album = await ctx.albums.create_album(name)
+        await ctx.albums.choose_album(album.id, album.name)
+    except Exception as exc:  # noqa: BLE001
+        await message.answer(f"⚠️ Не удалось создать альбом: {exc}")
+        return
+    await state.clear()
+    await message.answer(f"Альбом «{album.name}» создан и выбран.", reply_markup=MENU_KB)
+
+
+@router.callback_query(F.data == "adm:album:toggle")
+async def cb_album_toggle(query: CallbackQuery, ctx: AppContext) -> None:
+    if not await guard(query, ctx):
+        return
+    settings = await ctx.settings.get()
+    await ctx.settings.set("album_enabled", not settings.album_enabled)
+    await query.answer("Готово")
+    await _render_album(query, ctx)
+
+
+@router.callback_query(F.data == "adm:album:unlink")
+async def cb_album_unlink(query: CallbackQuery, ctx: AppContext) -> None:
+    if not await guard(query, ctx):
+        return
+    await ctx.albums.unlink()
+    await query.answer("Отвязано")
+    await _render_album(query, ctx)
 
 
 __all__ = ["router"]

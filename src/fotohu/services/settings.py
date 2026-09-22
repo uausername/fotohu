@@ -50,6 +50,15 @@ class Settings:
     #: Off by default so a fresh install does not spam the admin.
     notify_admin_on_upload: bool = False
 
+    #: Auto-add every uploaded photo/video to one chosen OneDrive album, on top
+    #: of the normal folder layout — see services/albums.py. Off until an admin
+    #: links an account and picks an album; the link is a separate Graph OAuth
+    #: grant, encrypted here the same way a storage account's tokens are.
+    album_enabled: bool = False
+    album_bundle_id: str | None = None
+    album_name: str | None = None
+    album_credentials_enc: str | None = None
+
     @property
     def purge_exceeds_telegram_window(self) -> bool:
         return self.purge_after_hours >= TELEGRAM_DELETE_WINDOW_HOURS

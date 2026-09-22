@@ -16,6 +16,7 @@ from ..core.models import FolderMode, Group, Person, PhotoPolicy, Role
 from ..core.naming import slugify
 from ..db.repo import Repo
 from ..storage.registry import StorageRegistry, backend_choices
+from .albums import AlbumService
 from .members import MemberService
 from .settings import TELEGRAM_DELETE_WINDOW_HOURS, SettingsService
 
@@ -59,11 +60,13 @@ class AdminService:
         settings: SettingsService,
         members: MemberService,
         storage: StorageRegistry,
+        albums: AlbumService | None = None,
     ) -> None:
         self.repo = repo
         self.settings = settings
         self.members = members
         self.storage = storage
+        self.albums = albums
 
     # ------------------------------------------------------------------ storage
 
@@ -434,3 +437,27 @@ class AdminService:
                 "поэтому по умолчанию такие снимки отклоняются с подсказкой.",
             ]
         )
+
+    # -------------------------------------------------------------------- album
+
+    async def album_overview(self) -> str:
+        settings = await self.settings.get()
+        linked = bool(settings.album_credentials_enc)
+        lines = ["🖼 <b>Альбом OneDrive</b>\n"]
+        if not linked:
+            lines.append(
+                "Ещё не подключено. Каждое новое фото или видео можно сразу добавлять "
+                "в выбранный альбом OneDrive — тот же, что в приложении «Фото».\n\n"
+                "⚠️ Работает только для <b>личного</b> аккаунта OneDrive (не для "
+                "рабочего/учебного) и требует отдельного входа — помимо того, что уже "
+                "использует загрузка файлов."
+            )
+            return "\n".join(lines)
+
+        lines.append("🔗 Аккаунт подключён.")
+        if settings.album_bundle_id:
+            state = "включено" if settings.album_enabled else "выключено ⏸"
+            lines.append(f"Альбом: <b>{settings.album_name}</b> ({state})")
+        else:
+            lines.append("Альбом ещё не выбран.")
+        return "\n".join(lines)
