@@ -157,18 +157,15 @@ class GraphAlbumClient(OAuthMixin):
     # -------------------------------------------------------------- operations
 
     async def list_albums(self) -> list[Album]:
-        response = await self._request("GET", f"{GRAPH}/me/drive/bundles?$select=id,name,bundle")
+        # /me/drive/bundles only ever returns bundle items — in practice, for
+        # a personal OneDrive, that's synonymous with albums. The "bundle"
+        # facet the docs describe for telling album bundles apart from other
+        # kinds is not actually populated in the response (confirmed against
+        # a real account), so there is nothing to filter on — and nothing to.
+        response = await self._request("GET", f"{GRAPH}/me/drive/bundles?$select=id,name")
         self._raise_for(response, "list albums")
         raw = response.json().get("value") or []
-        # TEMPORARY: the /bundles contract is thin on official docs — log the
-        # raw shape once so a mismatch (deprecated facet, wrong endpoint, ...)
-        # is visible in the deploy logs instead of just "no albums found".
-        log.warning("graph /me/drive/bundles raw response (%d item(s)): %r", len(raw), raw)
-        albums = []
-        for item in raw:
-            if (item.get("bundle") or {}).get("album") is not None:
-                albums.append(Album(id=item["id"], name=item.get("name", "?")))
-        return albums
+        return [Album(id=item["id"], name=item.get("name", "?")) for item in raw]
 
     async def create_album(self, name: str) -> Album:
         response = await self._request(
