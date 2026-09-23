@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import httpx
@@ -114,22 +115,32 @@ class TestAlbumOperations:
         await client.close()
 
     @respx.mock
-    async def test_add_item_binds_the_existing_driveitem_to_the_bundle(self, creds):
+    async def test_add_item_posts_to_the_bundles_children_collection(self, creds):
         client = GraphAlbumClient(creds)
-        route = respx.patch(f"{GRAPH}/me/drive/items/album-1").mock(
-            return_value=httpx.Response(200, json={})
+        route = respx.post(f"{GRAPH}/me/drive/bundles/album-1/children").mock(
+            return_value=httpx.Response(204)
         )
         await client.add_item("album-1", "photo-1")
-        import json as _json
+        assert json.loads(route.calls[0].request.content) == {"id": "photo-1"}
+        await client.close()
 
-        body = _json.loads(route.calls[0].request.content)
-        assert body["children@odata.bind"] == [f"{GRAPH}/me/drive/items/photo-1"]
+    @respx.mock
+    async def test_rclones_driveid_prefixed_id_is_reduced_to_the_graph_one(self, creds):
+        # rclone hands back "driveID#itemID"; Graph only knows "itemID".
+        client = GraphAlbumClient(creds)
+        route = respx.post(f"{GRAPH}/me/drive/bundles/album-1/children").mock(
+            return_value=httpx.Response(204)
+        )
+        await client.add_item("album-1", "2349DB44C50E0DCB#2349DB44C50E0DCB!s1b504af")
+        assert json.loads(route.calls[0].request.content) == {
+            "id": "2349DB44C50E0DCB!s1b504af"
+        }
         await client.close()
 
     @respx.mock
     async def test_a_rejected_add_raises_instead_of_failing_silently(self, creds):
         client = GraphAlbumClient(creds)
-        respx.patch(f"{GRAPH}/me/drive/items/album-1").mock(
+        respx.post(f"{GRAPH}/me/drive/bundles/album-1/children").mock(
             return_value=httpx.Response(404, text="not found")
         )
         with pytest.raises(StorageError):
@@ -146,8 +157,8 @@ class TestAlbumService:
     async def test_add_to_default_album_goes_through_once_linked_and_chosen(self, ctx, creds):
         await ctx.albums.save_link(creds)
         await ctx.albums.choose_album("album-1", "Family")
-        route = respx.patch(f"{GRAPH}/me/drive/items/album-1").mock(
-            return_value=httpx.Response(200, json={})
+        route = respx.post(f"{GRAPH}/me/drive/bundles/album-1/children").mock(
+            return_value=httpx.Response(204)
         )
         added = await ctx.albums.add_to_default_album("photo-1")
         assert added is True
