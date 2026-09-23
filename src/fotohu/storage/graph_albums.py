@@ -176,12 +176,24 @@ class GraphAlbumClient(OAuthMixin):
         return Album(id=data["id"], name=data.get("name", name))
 
     async def add_item(self, album_id: str, drive_item_id: str) -> None:
+        """Put an already-uploaded file in the album, leaving it where it is.
+
+        This goes through the bundle's own ``children`` collection rather than
+        the item's: a bundle holds references, so the photo stays the single
+        copy sitting in its dated folder. Addressing the bundle as an ordinary
+        driveItem instead gets "Bind requests not supported for containment
+        navigation property" — that path is folder containment, which would
+        mean a second copy.
+        """
+        # rclone reports OneDrive ids in its own "driveID#itemID" form; Graph
+        # knows only the bare item id.
+        _, _, item_id = drive_item_id.rpartition("#")
         response = await self._request(
-            "PATCH",
-            f"{GRAPH}/me/drive/items/{album_id}",
-            json={"children@odata.bind": [f"{GRAPH}/me/drive/items/{drive_item_id}"]},
+            "POST",
+            f"{GRAPH}/me/drive/bundles/{album_id}/children",
+            json={"id": item_id},
         )
-        self._raise_for(response, f"add {drive_item_id} to album {album_id}")
+        self._raise_for(response, f"add {item_id} to album {album_id}")
 
 
 __all__ = ["GraphAlbumClient", "DeviceAuth", "Album"]
