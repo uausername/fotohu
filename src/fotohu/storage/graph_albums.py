@@ -159,8 +159,13 @@ class GraphAlbumClient(OAuthMixin):
     async def list_albums(self) -> list[Album]:
         response = await self._request("GET", f"{GRAPH}/me/drive/bundles?$select=id,name,bundle")
         self._raise_for(response, "list albums")
+        raw = response.json().get("value") or []
+        # TEMPORARY: the /bundles contract is thin on official docs — log the
+        # raw shape once so a mismatch (deprecated facet, wrong endpoint, ...)
+        # is visible in the deploy logs instead of just "no albums found".
+        log.warning("graph /me/drive/bundles raw response (%d item(s)): %r", len(raw), raw)
         albums = []
-        for item in response.json().get("value") or []:
+        for item in raw:
             if (item.get("bundle") or {}).get("album") is not None:
                 albums.append(Album(id=item["id"], name=item.get("name", "?")))
         return albums
