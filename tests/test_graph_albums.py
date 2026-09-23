@@ -86,17 +86,15 @@ class TestDeviceFlow:
 
 class TestAlbumOperations:
     @respx.mock
-    async def test_list_albums_keeps_only_bundles_with_an_album_facet(self, creds):
+    async def test_list_albums_returns_every_bundle(self, creds):
+        # /bundles only ever lists bundle items in the first place, and (per a
+        # real account) does not actually populate a "bundle" facet to filter
+        # on — so everything it returns is taken as-is.
         client = GraphAlbumClient(creds)
         respx.get(f"{GRAPH}/me/drive/bundles").mock(
             return_value=httpx.Response(
                 200,
-                json={
-                    "value": [
-                        {"id": "1", "name": "Family", "bundle": {"album": {}}},
-                        {"id": "2", "name": "Not an album", "bundle": {}},
-                    ]
-                },
+                json={"value": [{"id": "1", "name": "Family"}]},
             )
         )
         albums = await client.list_albums()
